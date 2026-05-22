@@ -1,0 +1,30 @@
+{
+  "businessName": "Demo Roofing Co.",
+  "ownerName": "Owner",
+  "ownerPhone": "+15555550100",
+  "ownerWhatsApp": "+15555550100",
+  "services": [
+    "roof repair",
+    "roof replacement",
+    "leak inspection",
+    "storm damage inspection"
+  ],
+  "serviceAreas": [
+    "Tampa",
+    "St. Petersburg",
+    "Clearwater"
+  ],
+  "bookingRules": {
+    "defaultAppointmentLengthMinutes": 60,
+    "normalHours": "Monday-Friday 8am-5pm",
+    "afterHours": "Collect details and book the next available slot.",
+    "emergency": "Collect details, mark urgent, and notify owner immediately."
+  },
+  "neverSay": [
+    "Do not quote exact price.",
+    "Do not promise emergency arrival time.",
+    "Do not diagnose dangerous issues.",
+    "Do not book outside service area without owner review."
+  ]
+}
+

@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: lost-lead-booking-agent
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SEND_LIVE_MESSAGES
+        value: "false"
+      - key: SEND_LIVE_CALENDAR
+        value: "false"
+      - key: PREFER_CUSTOMER_WHATSAPP
+        value: "false"
+      - key: BUSINESS_NAME
+        value: Demo Roofing Co.
+
