@@ -222,9 +222,11 @@ async function sendOwnerNotification(lead) {
 async function sendCustomerConfirmation(lead) {
   if (process.env.SEND_CUSTOMER_CONFIRMATIONS !== "true") {
     return { mode: "skipped", reason: "customer_confirmations_disabled" };
-  
+  }
 
   if (!lead.phone || !(lead.bookedTime || lead.requestedTime)) {
+    return { mode: "skipped", reason: "missing_phone_or_time" };
+  }
 
   const businessName = process.env.BUSINESS_NAME || "the business";
   const message = `Your appointment with ${businessName} is booked for ${lead.bookedTime || lead.requestedTime}. Reply here if you need to update anything.`;
