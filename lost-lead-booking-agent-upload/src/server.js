@@ -253,20 +253,50 @@ async function processBooking(input) {
   return { lead, calendar, ownerNotification, customerConfirmation };
 }
 
+function parseToolParameters(toolCall) {
+  const value = toolCall.parameters
+    || toolCall.arguments
+    || toolCall.function?.arguments
+    || toolCall.input
+    || {};
+
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return { summary: value };
+    }
+  }
+
+  return value;
+}
+
 async function handleVapiToolCalls(message) {
-  const toolCalls = message.toolCallList || [];
+  const toolCalls = message.toolCallList || message.toolCalls || message.tool_calls || [];
   const results = [];
 
   for (const toolCall of toolCalls) {
-  const toolName = String(toolCall.name || "").toLowerCase();
+    const toolName = String(
+      toolCall.name
+        || toolCall.function?.name
+        || toolCall.toolName
+        || toolCall.tool?.name
+        || "",
+    ).toLowerCase();
 
-  if (["bookappointment", "capturelead", "savelead"].includes(toolName)) {
+    const isBookingTool = ["bookappointment", "capturelead", "savelead"].includes(toolName)
+      || toolName.includes("appointment")
+      || toolName.includes("booking")
+      || toolCalls.length === 1;
+
+    if (isBookingTool) {
       const processed = await processBooking({
-        ...(toolCall.parameters || {}),
+        ...parseToolParameters(toolCall),
         source: "vapi_tool",
       });
+
       results.push({
-        name: toolCall.name,
+        name: toolCall.name || toolCall.function?.name || "bookAppointment",
         toolCallId: toolCall.id,
         result: JSON.stringify({
           ok: true,
@@ -279,7 +309,7 @@ async function handleVapiToolCalls(message) {
       });
     } else {
       results.push({
-        name: toolCall.name,
+        name: toolCall.name || toolCall.function?.name || "unknown",
         toolCallId: toolCall.id,
         result: JSON.stringify({ ok: false, error: "unknown_tool" }),
       });
@@ -288,7 +318,6 @@ async function handleVapiToolCalls(message) {
 
   return { results };
 }
-
 async function handleVapiWebhook(body) {
   const message = body.message || body;
   const type = message.type || "unknown";
