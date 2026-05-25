@@ -258,7 +258,9 @@ async function handleVapiToolCalls(message) {
   const results = [];
 
   for (const toolCall of toolCalls) {
-    if (["bookAppointment", "captureLead", "saveLead"].includes(toolCall.name)) {
+  const toolName = String(toolCall.name || "").toLowerCase();
+
+  if (["bookappointment", "capturelead", "savelead"].includes(toolName)) {
       const processed = await processBooking({
         ...(toolCall.parameters || {}),
         source: "vapi_tool",
