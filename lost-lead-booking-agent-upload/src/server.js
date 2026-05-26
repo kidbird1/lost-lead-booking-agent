@@ -294,7 +294,7 @@ function renderLeadsPage(leads, url) {
     <section class="grid">${rows || `<div class="empty">No leads saved yet.</div>`}</section>
   </main>
   <script>
-    const suffix = ${JSON.stringify(suffix)};
+    const suffix = window.location.search || "";
     document.querySelectorAll("[data-filter]").forEach((button) => {
       button.addEventListener("click", () => {
         document.querySelectorAll("[data-filter]").forEach((item) => item.classList.remove("active"));
@@ -605,7 +605,7 @@ async function handleVapiToolCalls(message) {
         source: "vapi_tool",
       });
       results.push({
-        name: toolCall.name,
+        name: toolCall.name || toolCall.function?.name || toolCall.toolName || toolCall.tool?.name || "bookAppointment",
         toolCallId: toolCall.id,
         result: JSON.stringify({
           ok: true,
@@ -618,7 +618,7 @@ async function handleVapiToolCalls(message) {
       });
     } else {
       results.push({
-        name: toolCall.name,
+        name: toolCall.name || toolCall.function?.name || toolCall.toolName || toolCall.tool?.name || "unknown",
         toolCallId: toolCall.id,
         result: JSON.stringify({ ok: false, error: "unknown_tool" }),
       });
