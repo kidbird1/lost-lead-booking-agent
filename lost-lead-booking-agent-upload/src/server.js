@@ -302,8 +302,17 @@ async function handleVapiToolCalls(message) {
           ok: true,
           leadId: processed.lead.id,
           status: processed.lead.status,
+          ownerNotification: {
+            mode: processed.ownerNotification?.mode,
+            channel: processed.ownerNotification?.channel,
+            sid: processed.ownerNotification?.sid,
+            status: processed.ownerNotification?.status,
+            error: processed.ownerNotification?.error,
+            payload: processed.ownerNotification?.payload,
+          },
+          customerConfirmation: processed.customerConfirmation,
           message: processed.lead.status === "booked"
-            ? "The appointment has been saved."
+            ? "The appointment request has been saved and the owner has been notified."
             : "The owner has been notified for follow-up.",
         }),
       });
