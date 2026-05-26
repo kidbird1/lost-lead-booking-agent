@@ -25,6 +25,9 @@
 - [ ] Configure Google Calendar credentials
 - [x] Add SMS notifications
 - [x] Add Render deployment
+- [x] Add Greptile review workflow docs
+- [x] Add protected lead viewer endpoint
+- [x] Add protected lead follow-up page
 
 ## Phase 3 - Test
 
@@ -32,6 +35,10 @@
 - [x] Confirm test appointment path is created
 - [x] Confirm lead is saved
 - [x] Test fallback when no appointment slot exists
+- [x] Buy and assign Vapi phone number
+- [x] Add Vapi end-call tool and timeout limits
+- [x] Complete real phone call test
+- [x] Confirm lead follow-up page loads locally
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends
 
@@ -42,3 +49,8 @@
 - [x] Make first outreach list template
 - [ ] Make first real outreach list
 - [ ] Run first pilot
+
+## Knowledge / Workflow
+
+- [x] Capture Ras Mic agentic engineering workflow transcript and project notes
+- [x] Save agentic engineering workflow as a reusable project skill
