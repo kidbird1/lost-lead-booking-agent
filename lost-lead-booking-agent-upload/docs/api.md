@@ -45,6 +45,39 @@ Example:
 }
 ```
 
+## Lead Viewer
+
+```text
+GET /admin/leads?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Also supported for compatibility:
+
+```text
+GET /leads?key=YOUR_LEADS_VIEW_KEY
+```
+
+Shows saved Vapi/Twilio leads in a protected follow-up page. The owner can filter leads, call/text/WhatsApp the caller, and mark each lead as follow-up, contacted, booked, or lost.
+
+Requires one of these Render environment variables:
+
+```text
+LEAD_VIEWER_TOKEN=
+LEADS_VIEW_KEY=
+```
+
+The JSON lead list is available at:
+
+```text
+GET /api/leads?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Lead status updates use:
+
+```text
+POST /leads/status?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
 ## Booking
 
 ```text
@@ -77,4 +110,3 @@ SEND_LIVE_CALENDAR=false
 ```
 
 No real messages or calendar bookings are sent in test mode.
-

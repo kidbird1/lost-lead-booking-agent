@@ -36,6 +36,316 @@ async function appendJson(fileUrl, item) {
   return item;
 }
 
+async function readJsonFile(fileUrl) {
+  await ensureStore();
+  return JSON.parse(await readFile(fileUrl, "utf8"));
+}
+
+async function writeJsonFile(fileUrl, items) {
+  await ensureStore();
+  await writeFile(fileUrl, `${JSON.stringify(items, null, 2)}\n`);
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function formatDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function leadViewerKey() {
+  return process.env.LEAD_VIEWER_TOKEN || process.env.LEADS_VIEW_KEY || "";
+}
+
+function leadViewerUrlSuffix(url) {
+  const token = url.searchParams.get("token");
+  const key = url.searchParams.get("key");
+  if (token) return `?token=${encodeURIComponent(token)}`;
+  if (key) return `?key=${encodeURIComponent(key)}`;
+  return "";
+}
+
+function isLeadViewerAuthorized(req, url) {
+  const configuredKey = leadViewerKey();
+  if (!configuredKey) return false;
+
+  const requestKey = url.searchParams.get("token") || url.searchParams.get("key");
+  const auth = req.headers.authorization || "";
+  return requestKey === configuredKey || auth === `Bearer ${configuredKey}`;
+}
+
+function publicLead(lead) {
+  return {
+    id: lead.id,
+    createdAt: lead.createdAt,
+    updatedAt: lead.updatedAt || "",
+    status: lead.status || "new",
+    source: lead.source || "",
+    name: lead.name || "",
+    phone: lead.phone || "",
+    service: lead.service || "",
+    address: lead.address || "",
+    urgency: lead.urgency || "",
+    requestedTime: lead.requestedTime || "",
+    bookedTime: lead.bookedTime || "",
+    summary: lead.summary || "",
+    followUpNote: lead.followUpNote || "",
+  };
+}
+
+function phoneHref(value, channel = "tel") {
+  const phone = String(value || "").replace(/[^\d+]/g, "");
+  if (!phone) return "";
+  if (channel === "sms") return `sms:${phone}`;
+  if (channel === "whatsapp") return `https://wa.me/${phone.replace(/[^\d]/g, "")}`;
+  return `tel:${phone}`;
+}
+
+function statusLabel(status) {
+  return String(status || "new").replaceAll("_", " ");
+}
+
+function renderLeadViewerDisabled() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lead Follow-Up</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f7f5f0; color: #181818; }
+    main { max-width: 560px; margin: 12vh auto; padding: 24px; }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { color: #4b5563; line-height: 1.5; }
+    code { background: #ece7dc; border-radius: 4px; padding: 2px 6px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lead Follow-Up</h1>
+    <p>Set <code>LEAD_VIEWER_TOKEN</code> or <code>LEADS_VIEW_KEY</code> in Render to enable this page.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function renderUnauthorizedLeadViewer() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Unauthorized</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f7f5f0; color: #181818; }
+    main { max-width: 520px; margin: 12vh auto; padding: 24px; }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { color: #4b5563; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Unauthorized</h1>
+    <p>Use the private lead viewer link from Render.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function renderLeadsPage(leads, url) {
+  const visibleLeads = leads
+    .map(publicLead)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+
+  const counts = visibleLeads.reduce((totals, lead) => {
+    totals.all += 1;
+    totals[lead.status] = (totals[lead.status] || 0) + 1;
+    return totals;
+  }, { all: 0 });
+
+  const suffix = leadViewerUrlSuffix(url);
+  const rows = visibleLeads.map((lead) => {
+    const time = lead.bookedTime || lead.requestedTime || "Needs follow-up";
+    const call = phoneHref(lead.phone, "tel");
+    const sms = phoneHref(lead.phone, "sms");
+    const whatsapp = phoneHref(lead.phone, "whatsapp");
+
+    return `<article class="lead" data-status="${escapeHtml(lead.status)}" data-id="${escapeHtml(lead.id)}">
+      <div class="lead-head">
+        <div>
+          <p class="created">${escapeHtml(formatDate(lead.createdAt))}</p>
+          <h2>${escapeHtml(lead.name || "Unknown caller")}</h2>
+          <p class="service">${escapeHtml(lead.service || "Service request")}</p>
+        </div>
+        <span class="status status-${escapeHtml(lead.status)}">${escapeHtml(statusLabel(lead.status))}</span>
+      </div>
+      <dl>
+        <div><dt>Phone</dt><dd>${escapeHtml(lead.phone || "Unknown")}</dd></div>
+        <div><dt>Address</dt><dd>${escapeHtml(lead.address || "Unknown")}</dd></div>
+        <div><dt>Urgency</dt><dd>${escapeHtml(lead.urgency || "Unknown")}</dd></div>
+        <div><dt>Time</dt><dd>${escapeHtml(time)}</dd></div>
+      </dl>
+      ${lead.summary ? `<p class="summary">${escapeHtml(lead.summary)}</p>` : ""}
+      ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
+      <div class="actions">
+        ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
+        ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
+        ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
+        <button type="button" data-action="needs_follow_up">Follow up</button>
+        <button type="button" data-action="contacted">Contacted</button>
+        <button type="button" data-action="booked">Booked</button>
+        <button type="button" data-action="lost">Lost</button>
+      </div>
+    </article>`;
+  }).join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lead Follow-Up</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --green: #2f6f4e;
+      --blue: #245c88;
+      --red: #a13f3f;
+      --gold: #8a6b1f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    header { background: #fff; border-bottom: 1px solid var(--line); }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    .sub { margin: 8px 0 0; color: var(--muted); }
+    .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 22px; }
+    .metric { border: 1px solid var(--line); border-radius: 8px; padding: 14px; background: #f4f0e7; }
+    .metric strong { display: block; font-size: 24px; }
+    .metric span { color: var(--muted); font-size: 13px; }
+    .filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 22px 0; }
+    button, .actions a { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    .filters button.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+    .grid { display: grid; gap: 12px; }
+    .lead { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 18px; }
+    .lead-head { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+    .created { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+    h2 { margin: 0; font-size: 20px; }
+    .service { margin: 6px 0 0; color: var(--muted); }
+    .status { display: inline-flex; min-height: 28px; align-items: center; border-radius: 999px; padding: 4px 10px; font-size: 13px; text-transform: capitalize; white-space: nowrap; background: #eceff3; color: #26303d; }
+    .status-booked { background: #e0f0e7; color: var(--green); }
+    .status-contacted { background: #e3edf6; color: var(--blue); }
+    .status-needs_follow_up, .status-new, .status-needs_review { background: #f4ead0; color: var(--gold); }
+    .status-lost { background: #f6e1df; color: var(--red); }
+    dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0; }
+    dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .summary, .note { margin: 12px 0 0; line-height: 1.45; color: #323842; }
+    .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    .empty { border: 1px dashed var(--line); border-radius: 8px; padding: 36px; text-align: center; color: var(--muted); background: #fff; }
+    @media (max-width: 760px) {
+      .wrap { padding: 18px; }
+      .metrics, dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .lead-head { display: block; }
+      .status { margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Lead Follow-Up</h1>
+      <p class="sub">Call leads from Vapi and Twilio, ready for owner follow-up.</p>
+      <section class="metrics" aria-label="Lead totals">
+        <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
+        <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
+        <div class="metric"><strong>${counts.booked || 0}</strong><span>Booked</span></div>
+        <div class="metric"><strong>${counts.contacted || 0}</strong><span>Contacted</span></div>
+      </section>
+    </div>
+  </header>
+  <main class="wrap">
+    <nav class="filters" aria-label="Lead filters">
+      <button type="button" class="active" data-filter="all">All</button>
+      <button type="button" data-filter="needs_follow_up">Follow-up</button>
+      <button type="button" data-filter="booked">Booked</button>
+      <button type="button" data-filter="contacted">Contacted</button>
+      <button type="button" data-filter="lost">Lost</button>
+    </nav>
+    <section class="grid">${rows || `<div class="empty">No leads saved yet.</div>`}</section>
+  </main>
+  <script>
+    const suffix = ${JSON.stringify(suffix)};
+    document.querySelectorAll("[data-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll("[data-filter]").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        const filter = button.dataset.filter;
+        document.querySelectorAll(".lead").forEach((lead) => {
+          const status = lead.dataset.status;
+          const isFollowUp = filter === "needs_follow_up" && ["needs_follow_up", "needs_review", "new"].includes(status);
+          lead.hidden = filter !== "all" && status !== filter && !isFollowUp;
+        });
+      });
+    });
+    document.querySelectorAll("[data-action]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const lead = button.closest(".lead");
+        const note = prompt("Add a follow-up note", "");
+        const response = await fetch("/leads/status" + suffix, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: lead.dataset.id, status: button.dataset.action, note }),
+        });
+        if (response.ok) location.reload();
+        else alert("Could not update lead.");
+      });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+async function updateLeadStatus({ id, status, note }) {
+  const allowedStatuses = new Set(["new", "needs_follow_up", "needs_review", "contacted", "booked", "lost"]);
+  if (!id || !allowedStatuses.has(status)) {
+    return { ok: false, error: "invalid_lead_status_update" };
+  }
+
+  const leads = await readJsonFile(leadsFile);
+  const index = leads.findIndex((lead) => lead.id === id);
+  if (index === -1) return { ok: false, error: "lead_not_found" };
+
+  leads[index] = {
+    ...leads[index],
+    status,
+    followUpNote: note || leads[index].followUpNote || "",
+    updatedAt: new Date().toISOString(),
+  };
+
+  await writeJsonFile(leadsFile, leads);
+  return { ok: true, lead: publicLead(leads[index]) };
+}
+
 function normalizeLead(input = {}) {
   const parameters = input.parameters || input.arguments || input;
   return {
@@ -294,31 +604,21 @@ async function handleVapiToolCalls(message) {
         ...parseToolParameters(toolCall),
         source: "vapi_tool",
       });
-
       results.push({
-        name: toolCall.name || toolCall.function?.name || "bookAppointment",
+        name: toolCall.name,
         toolCallId: toolCall.id,
         result: JSON.stringify({
           ok: true,
           leadId: processed.lead.id,
           status: processed.lead.status,
-          ownerNotification: {
-            mode: processed.ownerNotification?.mode,
-            channel: processed.ownerNotification?.channel,
-            sid: processed.ownerNotification?.sid,
-            status: processed.ownerNotification?.status,
-            error: processed.ownerNotification?.error,
-            payload: processed.ownerNotification?.payload,
-          },
-          customerConfirmation: processed.customerConfirmation,
           message: processed.lead.status === "booked"
-            ? "The appointment request has been saved and the owner has been notified."
+            ? "The appointment has been saved."
             : "The owner has been notified for follow-up.",
         }),
       });
     } else {
       results.push({
-        name: toolCall.name || toolCall.function?.name || "unknown",
+        name: toolCall.name,
         toolCallId: toolCall.id,
         result: JSON.stringify({ ok: false, error: "unknown_tool" }),
       });
@@ -327,6 +627,7 @@ async function handleVapiToolCalls(message) {
 
   return { results };
 }
+
 async function handleVapiWebhook(body) {
   const message = body.message || body;
   const type = message.type || "unknown";
@@ -368,12 +669,60 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function html(res, status, body) {
+  res.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, service: "lost-lead-booking-agent" });
+    }
+
+    if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      const leads = await readJsonFile(leadsFile);
+      return html(res, 200, renderLeadsPage(leads, url));
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/leads") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const leads = await readJsonFile(leadsFile);
+      return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/leads/status") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const body = await readJson(req);
+      const result = await updateLeadStatus(body);
+      return json(res, result.ok ? 200 : 400, result);
     }
 
     if (req.method === "POST" && url.pathname === "/leads") {

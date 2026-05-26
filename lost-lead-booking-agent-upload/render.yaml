@@ -16,4 +16,5 @@ services:
         value: "false"
       - key: BUSINESS_NAME
         value: Demo Roofing Co.
-
+      - key: LEADS_VIEW_KEY
+        generateValue: true
