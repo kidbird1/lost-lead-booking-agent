@@ -6,6 +6,7 @@ const leadViewerToken = "smoke-token";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
+const availabilityCallId = `call_availability_${Date.now()}`;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -39,6 +40,8 @@ const server = spawn(process.execPath, ["src/server.js"], {
     BUSINESS_HOURS_START: "08:00",
     BUSINESS_HOURS_END: "18:00",
     DEFAULT_APPOINTMENT_MINUTES: "60",
+    AVAILABLE_SLOT_INTERVAL_MINUTES: "60",
+    MAX_AVAILABLE_SLOTS: "3",
     SCHEDULING_NOW_ISO: "2026-05-27T10:00:00-04:00",
   },
   stdio: "inherit",
@@ -49,6 +52,35 @@ try {
 
   const health = await fetch(`${baseUrl}/health`).then((res) => res.json());
   if (!health.ok) throw new Error("health check failed");
+
+  const availabilityResult = await post("/webhooks/voice", {
+    message: {
+      type: "tool-calls",
+      call: { id: availabilityCallId },
+      toolCallList: [
+        {
+          id: "tool_availability_1",
+          name: "getAvailableSlots",
+          parameters: {
+            requestedTime: "Friday",
+          },
+        },
+      ],
+    },
+  });
+  const availability = JSON.parse(availabilityResult.results?.[0]?.result || "{}");
+  if (!availability.ok || !Array.isArray(availability.slots) || availability.slots.length === 0) {
+    throw new Error("expected available slots from Vapi availability tool");
+  }
+  if (!availability.slots[0].label.includes("Friday")) {
+    throw new Error("expected availability label to include requested day");
+  }
+
+  const availabilityApi = await fetch(`${baseUrl}/api/availability?token=${leadViewerToken}&requestedTime=Friday`)
+    .then((res) => res.json());
+  if (!availabilityApi.ok || !Array.isArray(availabilityApi.slots) || availabilityApi.slots.length === 0) {
+    throw new Error("expected available slots from protected availability API");
+  }
 
   const toolResult = await post("/webhooks/voice", {
     message: {

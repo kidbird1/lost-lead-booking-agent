@@ -752,6 +752,18 @@ async function getGoogleAccessToken({ clientId, clientSecret, refreshToken }) {
 }
 
 async function checkGoogleCalendarAvailability({ accessToken, calendarId, startIso, endIso }) {
+  const busyResult = await fetchGoogleCalendarBusy({
+    accessToken,
+    calendarId,
+    timeMin: startIso,
+    timeMax: endIso,
+  });
+  if (busyResult.mode === "error") return busyResult;
+
+  return { mode: "live", available: busyResult.busy.length === 0, busy: busyResult.busy };
+}
+
+async function fetchGoogleCalendarBusy({ accessToken, calendarId, timeMin, timeMax }) {
   const response = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
     method: "POST",
     headers: {
@@ -759,8 +771,8 @@ async function checkGoogleCalendarAvailability({ accessToken, calendarId, startI
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      timeMin: startIso,
-      timeMax: endIso,
+      timeMin,
+      timeMax,
       items: [{ id: calendarId }],
     }),
   });
@@ -770,7 +782,212 @@ async function checkGoogleCalendarAvailability({ accessToken, calendarId, startI
   }
 
   const busy = payload.calendars?.[calendarId]?.busy || [];
-  return { mode: "live", available: busy.length === 0, busy };
+  return { mode: "live", busy };
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function slotIntervalMinutes() {
+  return parsePositiveInteger(process.env.AVAILABLE_SLOT_INTERVAL_MINUTES, 60);
+}
+
+function maxAvailableSlots() {
+  return parsePositiveInteger(process.env.MAX_AVAILABLE_SLOTS, 3);
+}
+
+function availabilityRequestText(input = {}) {
+  return input.day
+    || input.date
+    || input.when
+    || input.query
+    || input.requestedDate
+    || input.requestedDay
+    || input.requestedTime
+    || input.preferredTime
+    || "tomorrow";
+}
+
+function roundUpToInterval(time, interval) {
+  const minutes = time.hour * 60 + time.minute;
+  const roundedMinutes = Math.ceil(minutes / interval) * interval;
+  return time.startOf("day").plus({ minutes: roundedMinutes });
+}
+
+function buildAvailabilityWindow(input = {}) {
+  const parameters = input.parameters || input.arguments || input;
+  const zone = businessTimeZone();
+  const explicitStart = parameters.startIso || parameters.windowStartIso;
+  const explicitEnd = parameters.endIso || parameters.windowEndIso;
+
+  if (explicitStart && explicitEnd) {
+    const start = DateTime.fromISO(explicitStart, { setZone: true }).setZone(zone);
+    const end = DateTime.fromISO(explicitEnd, { setZone: true }).setZone(zone);
+    if (start.isValid && end.isValid && end > start) {
+      return { ok: true, start, end, zone };
+    }
+  }
+
+  const reference = currentBusinessTime();
+  const result = chrono.parse(String(availabilityRequestText(parameters)), reference.toJSDate(), { forwardDate: true })[0];
+  if (!result) {
+    return { ok: false, error: "unclear_availability_date", zone };
+  }
+
+  const day = DateTime.fromObject({
+    year: result.start.get("year"),
+    month: result.start.get("month"),
+    day: result.start.get("day"),
+  }, { zone });
+  if (!day.isValid) {
+    return { ok: false, error: "invalid_availability_date", zone };
+  }
+
+  const { start: openMinutes, end: closeMinutes } = businessHours();
+  const interval = slotIntervalMinutes();
+  let start = day.startOf("day").plus({ minutes: openMinutes });
+  const end = day.startOf("day").plus({ minutes: closeMinutes });
+  const now = currentBusinessTime();
+
+  if (start.hasSame(now, "day") && start < now) {
+    start = roundUpToInterval(now.plus({ minutes: 10 }), interval);
+  }
+
+  return { ok: true, start, end, zone };
+}
+
+function busyRangeOverlaps(start, end, busyRange) {
+  const busyStart = DateTime.fromISO(busyRange.start, { setZone: true }).setZone(start.zoneName);
+  const busyEnd = DateTime.fromISO(busyRange.end, { setZone: true }).setZone(start.zoneName);
+  if (!busyStart.isValid || !busyEnd.isValid) return false;
+  return start < busyEnd && end > busyStart;
+}
+
+function formatSlotLabel(start) {
+  return `${start.toFormat("cccc")} at ${start.toFormat("h:mm a")}`;
+}
+
+function buildAvailableSlots({ start, end, busy = [] }) {
+  const interval = slotIntervalMinutes();
+  const duration = appointmentDurationMinutes();
+  const limit = maxAvailableSlots();
+  const slots = [];
+
+  for (let slotStart = start; slotStart.plus({ minutes: duration }) <= end; slotStart = slotStart.plus({ minutes: interval })) {
+    const slotEnd = slotStart.plus({ minutes: duration });
+    const blocked = busy.some((range) => busyRangeOverlaps(slotStart, slotEnd, range));
+    if (!blocked) {
+      slots.push({
+        label: formatSlotLabel(slotStart),
+        startIso: slotStart.toISO(),
+        endIso: slotEnd.toISO(),
+      });
+    }
+    if (slots.length >= limit) break;
+  }
+
+  return slots;
+}
+
+function mockBusyRangesForWindow(window) {
+  const busyStarts = String(process.env.MOCK_GOOGLE_CALENDAR_BUSY_STARTS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return busyStarts.map((value) => {
+    const start = DateTime.fromISO(value, { setZone: true }).setZone(window.zone);
+    if (!start.isValid) return null;
+    return {
+      start: start.toISO(),
+      end: start.plus({ minutes: appointmentDurationMinutes() }).toISO(),
+    };
+  }).filter(Boolean);
+}
+
+async function getAvailableSlots(input = {}) {
+  const window = buildAvailabilityWindow(input);
+  if (!window.ok) {
+    return {
+      ok: false,
+      mode: "needs_review",
+      error: window.error,
+      message: "I could not read that day. Ask the caller what day works best.",
+    };
+  }
+
+  if (window.end <= window.start) {
+    return {
+      ok: true,
+      mode: "needs_review",
+      businessTimezone: window.zone,
+      slots: [],
+      message: "No open times are available in that window.",
+    };
+  }
+
+  if (process.env.SEND_LIVE_CALENDAR !== "true") {
+    const slots = buildAvailableSlots({ start: window.start, end: window.end });
+    return {
+      ok: true,
+      mode: "test",
+      businessTimezone: window.zone,
+      slots,
+      message: slots.length ? `Open times: ${slots.map((slot) => slot.label).join(", ")}.` : "No open times are available.",
+    };
+  }
+
+  if (googleCalendarMockEnabled()) {
+    const busy = mockBusyRangesForWindow(window);
+    const slots = buildAvailableSlots({ start: window.start, end: window.end, busy });
+    return {
+      ok: true,
+      mode: "live",
+      businessTimezone: window.zone,
+      slots,
+      message: slots.length ? `Open times: ${slots.map((slot) => slot.label).join(", ")}.` : "No open times are available.",
+    };
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+  const calendarId = process.env.GOOGLE_CALENDAR_ID;
+
+  if (!clientId || !clientSecret || !refreshToken || !calendarId) {
+    return {
+      ok: false,
+      mode: "error",
+      error: "missing_google_calendar_configuration",
+      message: "Calendar is not connected. Collect the caller's preferred time and say the team will confirm.",
+    };
+  }
+
+  const token = await getGoogleAccessToken({ clientId, clientSecret, refreshToken });
+  if (token.mode === "error") {
+    return { ok: false, ...token, message: "Calendar is not available right now. The team will confirm." };
+  }
+
+  const busyResult = await fetchGoogleCalendarBusy({
+    accessToken: token.accessToken,
+    calendarId,
+    timeMin: window.start.toISO(),
+    timeMax: window.end.toISO(),
+  });
+  if (busyResult.mode === "error") {
+    return { ok: false, ...busyResult, message: "Calendar availability could not be confirmed. The team will confirm." };
+  }
+
+  const slots = buildAvailableSlots({ start: window.start, end: window.end, busy: busyResult.busy });
+  return {
+    ok: true,
+    mode: "live",
+    businessTimezone: window.zone,
+    slots,
+    message: slots.length ? `Open times: ${slots.map((slot) => slot.label).join(", ")}.` : "No open times are available.",
+  };
 }
 
 function calendarFollowUpReason(calendar) {
@@ -1035,20 +1252,46 @@ async function handleVapiToolCalls(message) {
         || "",
     ).toLowerCase();
 
+    const toolResultName = toolCall.name
+      || toolCall.function?.name
+      || toolCall.toolName
+      || toolCall.tool?.name
+      || "unknown";
+    const toolCallId = toolCall.id || toolCall.toolCallId || toolCall.callId || randomUUID();
+    const isAvailabilityTool = [
+      "getavailableslots",
+      "checkavailability",
+      "getavailability",
+      "findavailableslots",
+      "availabletimes",
+      "getopentimes",
+    ].includes(toolName)
+      || toolName.includes("availability")
+      || toolName.includes("availableslot");
     const isBookingTool = ["bookappointment", "capturelead", "savelead"].includes(toolName)
       || toolName.includes("appointment")
       || toolName.includes("booking");
+
+    if (isAvailabilityTool) {
+      const availability = await getAvailableSlots(parseToolParameters(toolCall));
+      results.push({
+        name: toolResultName,
+        toolCallId,
+        result: JSON.stringify(availability),
+      });
+      continue;
+    }
 
     if (isBookingTool) {
       const processed = await processBooking({
         ...parseToolParameters(toolCall),
         callId: vapiCallId(message),
-        toolCallId: toolCall.id,
+        toolCallId,
         source: "vapi_tool",
       });
       results.push({
-        name: toolCall.name || toolCall.function?.name || toolCall.toolName || toolCall.tool?.name || "bookAppointment",
-        toolCallId: toolCall.id,
+        name: toolResultName,
+        toolCallId,
         result: JSON.stringify({
           ok: true,
           leadId: processed.lead.id,
@@ -1064,8 +1307,8 @@ async function handleVapiToolCalls(message) {
       });
     } else {
       results.push({
-        name: toolCall.name || toolCall.function?.name || toolCall.toolName || toolCall.tool?.name || "unknown",
-        toolCallId: toolCall.id,
+        name: toolResultName,
+        toolCallId,
         result: JSON.stringify({ ok: false, error: "unknown_tool" }),
       });
     }
@@ -1167,6 +1410,33 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/availability") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const availability = await getAvailableSlots(Object.fromEntries(url.searchParams.entries()));
+      return json(res, availability.ok === false ? 400 : 200, availability);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/availability") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const body = await readJson(req);
+      const availability = await getAvailableSlots(body);
+      return json(res, availability.ok === false ? 400 : 200, availability);
     }
 
     if (req.method === "POST" && url.pathname === "/leads/status") {

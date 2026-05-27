@@ -26,6 +26,10 @@ services:
         value: "18:00"
       - key: DEFAULT_APPOINTMENT_MINUTES
         value: "60"
+      - key: AVAILABLE_SLOT_INTERVAL_MINUTES
+        value: "60"
+      - key: MAX_AVAILABLE_SLOTS
+        value: "3"
       - key: LEAD_VIEWER_TOKEN
         generateValue: true
       - key: LEADS_VIEW_KEY
