@@ -2,12 +2,15 @@ import http from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import * as chrono from "chrono-node";
+import { DateTime } from "luxon";
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = new URL("../data/", import.meta.url);
 const leadsFile = new URL("../data/leads.json", import.meta.url);
 const eventsFile = new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
+const defaultBusinessTimezone = "America/New_York";
 
 async function ensureStore() {
   if (!existsSync(dataDir)) {
@@ -94,6 +97,189 @@ function formatDate(value) {
   });
 }
 
+function businessTimeZone() {
+  const configured = process.env.BUSINESS_TIMEZONE || defaultBusinessTimezone;
+  return DateTime.now().setZone(configured).isValid ? configured : defaultBusinessTimezone;
+}
+
+function currentBusinessTime() {
+  const zone = businessTimeZone();
+  const configuredNow = process.env.SCHEDULING_NOW_ISO;
+  if (configuredNow) {
+    const parsed = DateTime.fromISO(configuredNow, { zone });
+    if (parsed.isValid) return parsed.setZone(zone);
+  }
+  return DateTime.now().setZone(zone);
+}
+
+function parseClockMinutes(value, fallback) {
+  const match = String(value || "").trim().match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (!match) return fallback;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2] || 0);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return fallback;
+  return hours * 60 + minutes;
+}
+
+function businessHours() {
+  return {
+    start: parseClockMinutes(process.env.BUSINESS_HOURS_START, 8 * 60),
+    end: parseClockMinutes(process.env.BUSINESS_HOURS_END, 18 * 60),
+  };
+}
+
+function appointmentDurationMinutes() {
+  const configured = Number(process.env.DEFAULT_APPOINTMENT_MINUTES || 60);
+  return Number.isFinite(configured) && configured > 0 ? configured : 60;
+}
+
+function appointmentText(input = {}) {
+  return input.appointmentTime
+    || input.bookedTime
+    || input.requestedTime
+    || input.preferredTime
+    || "";
+}
+
+function scheduleReasonLabel(reason) {
+  const labels = {
+    missing_time: "No appointment time was provided.",
+    unclear_time: "The requested time needs owner review.",
+    missing_exact_clock_time: "The request needs an exact appointment time.",
+    invalid_datetime: "The appointment time could not be read.",
+    outside_business_hours: "Requested time is outside business hours.",
+    inside_business_hours: "Appointment time is inside business hours.",
+  };
+  return labels[reason] || "";
+}
+
+function scheduleFromDateTime(start, end, reason = "inside_business_hours") {
+  const { start: openMinutes, end: closeMinutes } = businessHours();
+  const startMinutes = start.hour * 60 + start.minute;
+  const endMinutes = end.hour * 60 + end.minute;
+
+  if (
+    startMinutes < openMinutes
+    || startMinutes >= closeMinutes
+    || endMinutes > closeMinutes
+    || !start.hasSame(end, "day")
+  ) {
+    return {
+      scheduleStatus: "needs_follow_up",
+      scheduleReason: "outside_business_hours",
+      scheduleNote: scheduleReasonLabel("outside_business_hours"),
+      businessTimezone: start.zoneName,
+      appointmentStartIso: start.toISO(),
+      appointmentEndIso: end.toISO(),
+    };
+  }
+
+  return {
+    scheduleStatus: "scheduled",
+    scheduleReason: reason,
+    scheduleNote: scheduleReasonLabel(reason),
+    businessTimezone: start.zoneName,
+    appointmentStartIso: start.toISO(),
+    appointmentEndIso: end.toISO(),
+  };
+}
+
+function buildAppointmentSchedule(input = {}) {
+  const parameters = input.parameters || input.arguments || input;
+  const zone = businessTimeZone();
+  const duration = appointmentDurationMinutes();
+  const explicitStart = parameters.appointmentStartIso || parameters.startIso || input.appointmentStartIso || input.startIso;
+  const explicitEnd = parameters.appointmentEndIso || parameters.endIso || input.appointmentEndIso || input.endIso;
+
+  if (explicitStart) {
+    const start = DateTime.fromISO(explicitStart, { setZone: true }).setZone(zone);
+    if (!start.isValid) {
+      return {
+        scheduleStatus: "needs_follow_up",
+        scheduleReason: "invalid_datetime",
+        scheduleNote: scheduleReasonLabel("invalid_datetime"),
+        businessTimezone: zone,
+        appointmentStartIso: "",
+        appointmentEndIso: "",
+      };
+    }
+
+    const end = explicitEnd
+      ? DateTime.fromISO(explicitEnd, { setZone: true }).setZone(zone)
+      : start.plus({ minutes: duration });
+
+    if (!end.isValid) {
+      return {
+        scheduleStatus: "needs_follow_up",
+        scheduleReason: "invalid_datetime",
+        scheduleNote: scheduleReasonLabel("invalid_datetime"),
+        businessTimezone: zone,
+        appointmentStartIso: start.toISO(),
+        appointmentEndIso: "",
+      };
+    }
+
+    return scheduleFromDateTime(start, end);
+  }
+
+  const text = appointmentText(parameters);
+  if (!text) {
+    return {
+      scheduleStatus: "needs_follow_up",
+      scheduleReason: "missing_time",
+      scheduleNote: scheduleReasonLabel("missing_time"),
+      businessTimezone: zone,
+      appointmentStartIso: "",
+      appointmentEndIso: "",
+    };
+  }
+
+  const reference = currentBusinessTime();
+  const result = chrono.parse(String(text), reference.toJSDate(), { forwardDate: true })[0];
+  if (!result) {
+    return {
+      scheduleStatus: "needs_follow_up",
+      scheduleReason: "unclear_time",
+      scheduleNote: scheduleReasonLabel("unclear_time"),
+      businessTimezone: zone,
+      appointmentStartIso: "",
+      appointmentEndIso: "",
+    };
+  }
+
+  if (!result.start.isCertain("hour")) {
+    return {
+      scheduleStatus: "needs_follow_up",
+      scheduleReason: "missing_exact_clock_time",
+      scheduleNote: scheduleReasonLabel("missing_exact_clock_time"),
+      businessTimezone: zone,
+      appointmentStartIso: "",
+      appointmentEndIso: "",
+    };
+  }
+
+  const start = DateTime.fromObject({
+    year: result.start.get("year"),
+    month: result.start.get("month"),
+    day: result.start.get("day"),
+    hour: result.start.get("hour"),
+    minute: result.start.get("minute") || 0,
+  }, { zone });
+
+  if (!start.isValid) {
+    return {
+      scheduleStatus: "needs_follow_up",
+      scheduleReason: "invalid_datetime",
+      scheduleNote: scheduleReasonLabel("invalid_datetime"),
+      businessTimezone: zone,
+      appointmentStartIso: "",
+      appointmentEndIso: "",
+    };
+  }
+
+  return scheduleFromDateTime(start, start.plus({ minutes: duration }));
+}
+
 function leadViewerKey() {
   return process.env.LEAD_VIEWER_TOKEN || process.env.LEADS_VIEW_KEY || "";
 }
@@ -130,6 +316,12 @@ function publicLead(lead) {
     urgency: lead.urgency || "",
     requestedTime: lead.requestedTime || "",
     bookedTime: lead.bookedTime || "",
+    scheduleStatus: lead.scheduleStatus || "",
+    scheduleReason: lead.scheduleReason || "",
+    scheduleNote: lead.scheduleNote || "",
+    businessTimezone: lead.businessTimezone || "",
+    appointmentStartIso: lead.appointmentStartIso || "",
+    appointmentEndIso: lead.appointmentEndIso || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
   };
@@ -228,6 +420,7 @@ function renderLeadsPage(leads, url) {
         <div><dt>Time</dt><dd>${escapeHtml(time)}</dd></div>
       </dl>
       ${lead.summary ? `<p class="summary">${escapeHtml(lead.summary)}</p>` : ""}
+      ${lead.scheduleNote && lead.scheduleStatus !== "scheduled" ? `<p class="note">${escapeHtml(lead.scheduleNote)}</p>` : ""}
       ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
       <div class="actions">
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
@@ -389,6 +582,12 @@ function normalizeLead(input = {}) {
     urgency: parameters.urgency || "",
     requestedTime: parameters.requestedTime || parameters.preferredTime || "",
     bookedTime: parameters.bookedTime || parameters.appointmentTime || "",
+    appointmentStartIso: parameters.appointmentStartIso || parameters.startIso || "",
+    appointmentEndIso: parameters.appointmentEndIso || parameters.endIso || "",
+    scheduleStatus: parameters.scheduleStatus || "",
+    scheduleReason: parameters.scheduleReason || "",
+    scheduleNote: parameters.scheduleNote || "",
+    businessTimezone: parameters.businessTimezone || "",
     summary: parameters.summary || input.summary || "",
     raw: input,
   };
@@ -423,6 +622,12 @@ async function saveLead(input) {
     urgency: input.urgency || "",
     requestedTime: input.requestedTime || "",
     bookedTime: input.bookedTime || "",
+    appointmentStartIso: input.appointmentStartIso || "",
+    appointmentEndIso: input.appointmentEndIso || "",
+    scheduleStatus: input.scheduleStatus || "",
+    scheduleReason: input.scheduleReason || "",
+    scheduleNote: input.scheduleNote || "",
+    businessTimezone: input.businessTimezone || "",
     summary: input.summary || "",
     raw: input,
   };
@@ -481,6 +686,10 @@ async function sendTwilioMessage({ to, body, channel = "sms" }) {
 }
 
 async function createCalendarBooking(lead) {
+  if (lead.status !== "booked") {
+    return { mode: "skipped", reason: "not_booked" };
+  }
+
   if (process.env.SEND_LIVE_CALENDAR !== "true") {
     return { mode: "test", bookedTime: lead.bookedTime || lead.requestedTime || "" };
   }
@@ -489,8 +698,8 @@ async function createCalendarBooking(lead) {
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
   const calendarId = process.env.GOOGLE_CALENDAR_ID;
-  const startIso = lead.raw.appointmentStartIso || lead.raw.startIso;
-  const endIso = lead.raw.appointmentEndIso || lead.raw.endIso;
+  const startIso = lead.appointmentStartIso || lead.raw.appointmentStartIso || lead.raw.startIso;
+  const endIso = lead.appointmentEndIso || lead.raw.appointmentEndIso || lead.raw.endIso;
 
   if (!clientId || !clientSecret || !refreshToken || !calendarId) {
     return { mode: "error", error: "missing_google_calendar_configuration" };
@@ -524,6 +733,7 @@ async function createCalendarBooking(lead) {
       `Service: ${lead.service || "Unknown"}`,
       `Address: ${lead.address || "Unknown"}`,
       `Urgency: ${lead.urgency || "Unknown"}`,
+      `Scheduling: ${lead.scheduleNote || lead.scheduleStatus || "Unknown"}`,
       `Summary: ${lead.summary || ""}`,
     ].join("\n"),
     start: { dateTime: startIso },
@@ -551,14 +761,15 @@ async function createCalendarBooking(lead) {
 
 async function sendOwnerNotification(lead) {
   const message = [
-    "New booked job:",
+    lead.status === "booked" ? "New booked job:" : "New lead needs review:",
     `Name: ${lead.name || "Unknown"}`,
     `Phone: ${lead.phone || "Unknown"}`,
     `Service: ${lead.service || "Unknown"}`,
     `Address: ${lead.address || "Unknown"}`,
     `Urgency: ${lead.urgency || "Unknown"}`,
     `Time: ${lead.bookedTime || lead.requestedTime || "Needs follow-up"}`,
-  ].join("\n");
+    lead.scheduleNote ? `Note: ${lead.scheduleNote}` : "",
+  ].filter(Boolean).join("\n");
 
   const ownerWhatsApp = process.env.OWNER_WHATSAPP_NUMBER;
   const ownerSms = process.env.OWNER_PHONE_NUMBER;
@@ -607,10 +818,13 @@ async function processBooking(input) {
     };
   }
 
+  const normalized = normalizeLead(input);
+  const schedule = buildAppointmentSchedule(normalized);
   const lead = await saveLead({
-    ...normalizeLead(input),
+    ...normalized,
     callId: input.callId || "",
-    status: input.bookedTime || input.appointmentTime ? "booked" : "needs_follow_up",
+    ...schedule,
+    status: schedule.scheduleStatus === "scheduled" ? "booked" : "needs_follow_up",
   });
   const calendar = await createCalendarBooking(lead);
   const ownerNotification = await sendOwnerNotification(lead);
@@ -670,6 +884,10 @@ async function handleVapiToolCalls(message) {
           ok: true,
           leadId: processed.lead.id,
           status: processed.lead.status,
+          scheduleStatus: processed.lead.scheduleStatus,
+          scheduleReason: processed.lead.scheduleReason,
+          appointmentStartIso: processed.lead.appointmentStartIso,
+          appointmentEndIso: processed.lead.appointmentEndIso,
           message: processed.lead.status === "booked"
             ? "The appointment has been saved."
             : "The owner has been notified for follow-up.",

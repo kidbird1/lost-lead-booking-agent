@@ -1,0 +1,5 @@
+node_modules/
+lost-lead-booking-agent-upload/node_modules/
+lost-lead-booking-agent-upload/data/
+.env
+*.log
