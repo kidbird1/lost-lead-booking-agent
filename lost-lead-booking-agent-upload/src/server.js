@@ -7,6 +7,7 @@ const port = Number(process.env.PORT || 3000);
 const dataDir = new URL("../data/", import.meta.url);
 const leadsFile = new URL("../data/leads.json", import.meta.url);
 const eventsFile = new URL("../data/events.json", import.meta.url);
+const fileWriteQueues = new Map();
 
 async function ensureStore() {
   if (!existsSync(dataDir)) {
@@ -29,21 +30,47 @@ async function readJson(req) {
 }
 
 async function appendJson(fileUrl, item) {
-  await ensureStore();
-  const current = JSON.parse(await readFile(fileUrl, "utf8"));
-  current.push(item);
-  await writeFile(fileUrl, `${JSON.stringify(current, null, 2)}\n`);
-  return item;
+  return enqueueJsonWrite(fileUrl, async () => {
+    const current = await readJsonFile(fileUrl);
+    current.push(item);
+    await writeJsonFile(fileUrl, current);
+    return item;
+  });
 }
 
 async function readJsonFile(fileUrl) {
   await ensureStore();
-  return JSON.parse(await readFile(fileUrl, "utf8"));
+  const raw = await readFile(fileUrl, "utf8");
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    const end = raw.lastIndexOf("]");
+    if (end >= 0) {
+      try {
+        const recovered = JSON.parse(raw.slice(0, end + 1));
+        return Array.isArray(recovered) ? recovered : [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }
 }
 
 async function writeJsonFile(fileUrl, items) {
   await ensureStore();
   await writeFile(fileUrl, `${JSON.stringify(items, null, 2)}\n`);
+}
+
+async function enqueueJsonWrite(fileUrl, task) {
+  const key = fileUrl.href;
+  const previous = fileWriteQueues.get(key) || Promise.resolve();
+  const next = previous.catch(() => {}).then(task);
+  fileWriteQueues.set(key, next.finally(() => {
+    if (fileWriteQueues.get(key) === next) fileWriteQueues.delete(key);
+  }));
+  return next;
 }
 
 function escapeHtml(value = "") {
@@ -331,19 +358,21 @@ async function updateLeadStatus({ id, status, note }) {
     return { ok: false, error: "invalid_lead_status_update" };
   }
 
-  const leads = await readJsonFile(leadsFile);
-  const index = leads.findIndex((lead) => lead.id === id);
-  if (index === -1) return { ok: false, error: "lead_not_found" };
+  return enqueueJsonWrite(leadsFile, async () => {
+    const leads = await readJsonFile(leadsFile);
+    const index = leads.findIndex((lead) => lead.id === id);
+    if (index === -1) return { ok: false, error: "lead_not_found" };
 
-  leads[index] = {
-    ...leads[index],
-    status,
-    followUpNote: note || leads[index].followUpNote || "",
-    updatedAt: new Date().toISOString(),
-  };
+    leads[index] = {
+      ...leads[index],
+      status,
+      followUpNote: note || leads[index].followUpNote || "",
+      updatedAt: new Date().toISOString(),
+    };
 
-  await writeJsonFile(leadsFile, leads);
-  return { ok: true, lead: publicLead(leads[index]) };
+    await writeJsonFile(leadsFile, leads);
+    return { ok: true, lead: publicLead(leads[index]) };
+  });
 }
 
 function normalizeLead(input = {}) {
@@ -596,8 +625,7 @@ async function handleVapiToolCalls(message) {
 
     const isBookingTool = ["bookappointment", "capturelead", "savelead"].includes(toolName)
       || toolName.includes("appointment")
-      || toolName.includes("booking")
-      || toolCalls.length === 1;
+      || toolName.includes("booking");
 
     if (isBookingTool) {
       const processed = await processBooking({
@@ -726,6 +754,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/leads") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "manual_leads_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
       const body = await readJson(req);
       const processed = await processBooking({ ...body, source: "manual" });
       return json(res, 201, { ok: true, ...processed });
@@ -738,6 +774,14 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/bookings") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "manual_bookings_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
       const body = await readJson(req);
       const processed = await processBooking({ ...body, status: "booked", source: "booking_api" });
       return json(res, 201, { ok: true, ...processed });
@@ -745,7 +789,8 @@ const server = http.createServer(async (req, res) => {
 
     return json(res, 404, { ok: false, error: "not_found" });
   } catch (error) {
-    return json(res, 500, { ok: false, error: error.message });
+    console.error(error);
+    return json(res, 500, { ok: false, error: "internal_server_error" });
   }
 });
 
