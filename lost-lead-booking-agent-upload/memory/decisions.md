@@ -15,3 +15,8 @@
 - WhatsApp decision: use for confirmations/follow-up, with SMS fallback.
 - Voice provider decision: Vapi for MVP; Retell backup; OpenAI Realtime as custom v2.
 - First niche for MVP: home service contractors, starting with roofing/HVAC style call flow.
+
+## 2026-05-27
+
+- Booking reliability rule: the `bookAppointment` tool is the primary booking record.
+- Vapi end-of-call reports are fallback-only and should not create a second lead when the call already saved through the booking tool.

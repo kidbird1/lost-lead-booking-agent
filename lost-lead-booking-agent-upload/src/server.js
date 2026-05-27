@@ -120,6 +120,7 @@ function publicLead(lead) {
     id: lead.id,
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt || "",
+    callId: lead.callId || "",
     status: lead.status || "new",
     source: lead.source || "",
     name: lead.name || "",
@@ -378,6 +379,7 @@ async function updateLeadStatus({ id, status, note }) {
 function normalizeLead(input = {}) {
   const parameters = input.parameters || input.arguments || input;
   return {
+    callId: parameters.callId || input.callId || input.call?.id || "",
     status: parameters.status || input.status || "new",
     source: input.source || "voice",
     name: parameters.name || parameters.customerName || parameters.callerName || "",
@@ -392,10 +394,26 @@ function normalizeLead(input = {}) {
   };
 }
 
+function vapiCallId(message = {}) {
+  return message.call?.id
+    || message.callId
+    || message.call_id
+    || message.artifact?.callId
+    || message.artifact?.call?.id
+    || "";
+}
+
+async function findLeadByCallId(callId) {
+  if (!callId) return null;
+  const leads = await readJsonFile(leadsFile);
+  return leads.find((lead) => lead.callId === callId) || null;
+}
+
 async function saveLead(input) {
   const lead = {
     id: randomUUID(),
     createdAt: new Date().toISOString(),
+    callId: input.callId || "",
     status: input.status || "new",
     source: input.source || "voice",
     name: input.name || "",
@@ -579,8 +597,19 @@ async function sendCustomerConfirmation(lead) {
 }
 
 async function processBooking(input) {
+  const existing = await findLeadByCallId(input.callId);
+  if (existing && existing.source === "vapi_tool") {
+    return {
+      lead: existing,
+      calendar: { mode: "skipped", reason: "duplicate_call" },
+      ownerNotification: { mode: "skipped", reason: "duplicate_call" },
+      customerConfirmation: { mode: "skipped", reason: "duplicate_call" },
+    };
+  }
+
   const lead = await saveLead({
     ...normalizeLead(input),
+    callId: input.callId || "",
     status: input.bookedTime || input.appointmentTime ? "booked" : "needs_follow_up",
   });
   const calendar = await createCalendarBooking(lead);
@@ -630,6 +659,8 @@ async function handleVapiToolCalls(message) {
     if (isBookingTool) {
       const processed = await processBooking({
         ...parseToolParameters(toolCall),
+        callId: vapiCallId(message),
+        toolCallId: toolCall.id,
         source: "vapi_tool",
       });
       results.push({
@@ -674,6 +705,18 @@ async function handleVapiWebhook(body) {
   }
 
   if (type === "end-of-call-report") {
+    const callId = vapiCallId(message);
+    const existingLead = await findLeadByCallId(callId);
+    if (existingLead) {
+      return {
+        ok: true,
+        type,
+        skipped: true,
+        reason: "lead_already_saved_for_call",
+        leadId: existingLead.id,
+      };
+    }
+
     const transcript = message.artifact?.transcript || "";
     const summary = message.summary || message.analysis?.summary || transcript.slice(0, 500);
     if (summary) {
@@ -682,7 +725,7 @@ async function handleVapiWebhook(body) {
         status: "needs_review",
         summary,
         transcript,
-        callId: message.call?.id,
+        callId,
       }));
       const notification = await sendOwnerNotification(lead);
       return { ok: true, type, leadId: lead.id, notification };

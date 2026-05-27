@@ -39,6 +39,7 @@
 - [x] Add Vapi end-call tool and timeout limits
 - [x] Complete real phone call test
 - [x] Confirm lead follow-up page loads locally
+- [x] Prevent duplicate lead records from Vapi end-of-call fallback
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends
 

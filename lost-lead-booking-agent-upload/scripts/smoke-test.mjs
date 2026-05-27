@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 
 const port = process.env.PORT || "3000";
 const baseUrl = `http://localhost:${port}`;
+const leadViewerToken = "smoke-token";
+const callId = `call_smoke_${Date.now()}`;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -21,7 +23,7 @@ async function post(path, body) {
 }
 
 const server = spawn(process.execPath, ["src/server.js"], {
-  env: { ...process.env, PORT: port },
+  env: { ...process.env, PORT: port, LEAD_VIEWER_TOKEN: leadViewerToken },
   stdio: "inherit",
 });
 
@@ -34,6 +36,7 @@ try {
   const toolResult = await post("/webhooks/voice", {
     message: {
       type: "tool-calls",
+      call: { id: callId },
       toolCallList: [
         {
           id: "tool_smoke_1",
@@ -54,6 +57,21 @@ try {
 
   if (!Array.isArray(toolResult.results) || toolResult.results.length !== 1) {
     throw new Error("tool call result missing");
+  }
+
+  await post("/webhooks/voice", {
+    message: {
+      type: "end-of-call-report",
+      call: { id: callId },
+      summary: "Fallback summary should not create a duplicate lead.",
+      artifact: { transcript: "Caller booked through the appointment tool." },
+    },
+  });
+
+  const leadsPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const matchingLeads = leadsPayload.leads.filter((lead) => lead.callId === callId);
+  if (matchingLeads.length !== 1) {
+    throw new Error(`expected one lead for call, found ${matchingLeads.length}`);
   }
 
   console.log("Smoke test passed");
