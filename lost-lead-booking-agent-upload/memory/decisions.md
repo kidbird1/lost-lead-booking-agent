@@ -20,3 +20,4 @@
 
 - Booking reliability rule: the `bookAppointment` tool is the primary booking record.
 - Vapi end-of-call reports are fallback-only and should not create a second lead when the call already saved through the booking tool.
+- Scheduling rule: natural appointment times are parsed in the business timezone, and requests outside business hours are saved for owner follow-up instead of treated as confirmed bookings.
