@@ -16,7 +16,7 @@ Use this as the assistant Server URL in Vapi.
 
 ## Tools
 
-Create one tool:
+Create these tools:
 
 ```text
 Name: bookAppointment
@@ -50,6 +50,40 @@ Tool server URL:
 https://YOUR-RENDER-APP.onrender.com/webhooks/voice
 ```
 
+```text
+Name: getAvailableSlots
+Description: Check open appointment times on the business calendar.
+```
+
+Parameters:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "requestedTime": {
+      "type": "string",
+      "description": "Natural day or time from the caller, like tomorrow, Thursday, or Friday morning."
+    },
+    "startIso": {
+      "type": "string",
+      "description": "Optional ISO window start."
+    },
+    "endIso": {
+      "type": "string",
+      "description": "Optional ISO window end."
+    }
+  },
+  "required": []
+}
+```
+
+Tool server URL:
+
+```text
+https://YOUR-RENDER-APP.onrender.com/webhooks/voice
+```
+
 ## Assistant Prompt
 
 ```text
@@ -68,6 +102,10 @@ Ask for:
 If the caller is a good fit and gives enough information, call the bookAppointment tool.
 
 If the caller is outside service area, urgent, upset, or unclear, collect details and call the bookAppointment tool with a summary and no bookedTime.
+
+When the caller asks what times are open, or before offering exact appointment options, call getAvailableSlots.
+Offer no more than three open times.
+If no times are open, ask for another day.
 
 Only send appointmentStartIso and appointmentEndIso when the appointment time is exact.
 Use ISO 8601 with timezone.

@@ -21,3 +21,5 @@
 - Booking reliability rule: the `bookAppointment` tool is the primary booking record.
 - Vapi end-of-call reports are fallback-only and should not create a second lead when the call already saved through the booking tool.
 - Scheduling rule: natural appointment times are parsed in the business timezone, and requests outside business hours are saved for owner follow-up instead of treated as confirmed bookings.
+- Calendar rule: when live Google Calendar booking is enabled, the backend checks free/busy before creating the event. Busy or unconfirmed slots are saved as follow-up instead of confirmed bookings.
+- Calendar tool rule: Riley should ask the backend for available Google Calendar slots before offering exact appointment times. Google Calendar remains the source of truth; Calendly can stay optional for public booking links later.

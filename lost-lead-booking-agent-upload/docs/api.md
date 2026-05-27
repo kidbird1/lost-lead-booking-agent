@@ -72,6 +72,14 @@ The JSON lead list is available at:
 GET /api/leads?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+Open appointment slots are available at:
+
+```text
+GET /api/availability?token=YOUR_LEAD_VIEWER_TOKEN&requestedTime=Friday
+```
+
+This returns up to `MAX_AVAILABLE_SLOTS` open times from the connected calendar.
+
 Lead status updates use:
 
 ```text
