@@ -12,6 +12,8 @@ services:
         value: "false"
       - key: SEND_LIVE_CALENDAR
         value: "false"
+      - key: CHECK_CALENDAR_AVAILABILITY
+        value: "true"
       - key: PREFER_CUSTOMER_WHATSAPP
         value: "false"
       - key: BUSINESS_NAME

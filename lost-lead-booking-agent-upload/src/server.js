@@ -149,6 +149,9 @@ function scheduleReasonLabel(reason) {
     invalid_datetime: "The appointment time could not be read.",
     outside_business_hours: "Requested time is outside business hours.",
     inside_business_hours: "Appointment time is inside business hours.",
+    calendar_slot_unavailable: "Requested time is already busy on the calendar.",
+    calendar_check_failed: "Calendar availability could not be confirmed.",
+    calendar_event_create_failed: "Calendar event could not be created.",
   };
   return labels[reason] || "";
 }
@@ -322,6 +325,9 @@ function publicLead(lead) {
     businessTimezone: lead.businessTimezone || "",
     appointmentStartIso: lead.appointmentStartIso || "",
     appointmentEndIso: lead.appointmentEndIso || "",
+    calendarStatus: lead.calendarStatus || "",
+    calendarEventId: lead.calendarEventId || "",
+    calendarLink: lead.calendarLink || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
   };
@@ -426,6 +432,7 @@ function renderLeadsPage(leads, url) {
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
         ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
         ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
+        ${lead.calendarLink ? `<a href="${escapeHtml(lead.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
         <button type="button" data-action="needs_follow_up">Follow up</button>
         <button type="button" data-action="contacted">Contacted</button>
         <button type="button" data-action="booked">Booked</button>
@@ -569,6 +576,23 @@ async function updateLeadStatus({ id, status, note }) {
   });
 }
 
+async function updateStoredLead(id, updates) {
+  return enqueueJsonWrite(leadsFile, async () => {
+    const leads = await readJsonFile(leadsFile);
+    const index = leads.findIndex((lead) => lead.id === id);
+    if (index === -1) return null;
+
+    leads[index] = {
+      ...leads[index],
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await writeJsonFile(leadsFile, leads);
+    return leads[index];
+  });
+}
+
 function normalizeLead(input = {}) {
   const parameters = input.parameters || input.arguments || input;
   return {
@@ -588,6 +612,9 @@ function normalizeLead(input = {}) {
     scheduleReason: parameters.scheduleReason || "",
     scheduleNote: parameters.scheduleNote || "",
     businessTimezone: parameters.businessTimezone || "",
+    calendarStatus: parameters.calendarStatus || "",
+    calendarEventId: parameters.calendarEventId || "",
+    calendarLink: parameters.calendarLink || "",
     summary: parameters.summary || input.summary || "",
     raw: input,
   };
@@ -628,6 +655,9 @@ async function saveLead(input) {
     scheduleReason: input.scheduleReason || "",
     scheduleNote: input.scheduleNote || "",
     businessTimezone: input.businessTimezone || "",
+    calendarStatus: input.calendarStatus || "",
+    calendarEventId: input.calendarEventId || "",
+    calendarLink: input.calendarLink || "",
     summary: input.summary || "",
     raw: input,
   };
@@ -685,6 +715,74 @@ async function sendTwilioMessage({ to, body, channel = "sms" }) {
   return { mode: "live", channel, sid: payload.sid, status: payload.status };
 }
 
+function calendarAvailabilityEnabled() {
+  return process.env.CHECK_CALENDAR_AVAILABILITY !== "false";
+}
+
+function googleCalendarMockEnabled() {
+  return process.env.NODE_ENV === "test" && process.env.MOCK_GOOGLE_CALENDAR === "true";
+}
+
+function mockCalendarBusyFor(lead) {
+  const busyCallIds = String(process.env.MOCK_GOOGLE_CALENDAR_BUSY_CALL_IDS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return busyCallIds.includes(lead.callId);
+}
+
+async function getGoogleAccessToken({ clientId, clientSecret, refreshToken }) {
+  const tokenForm = new URLSearchParams();
+  tokenForm.set("client_id", clientId);
+  tokenForm.set("client_secret", clientSecret);
+  tokenForm.set("refresh_token", refreshToken);
+  tokenForm.set("grant_type", "refresh_token");
+
+  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: tokenForm,
+  });
+  const tokenPayload = await tokenResponse.json();
+  if (!tokenResponse.ok || !tokenPayload.access_token) {
+    return { mode: "error", error: "google_token_refresh_failed", payload: tokenPayload };
+  }
+
+  return { mode: "live", accessToken: tokenPayload.access_token };
+}
+
+async function checkGoogleCalendarAvailability({ accessToken, calendarId, startIso, endIso }) {
+  const response = await fetch("https://www.googleapis.com/calendar/v3/freeBusy", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      timeMin: startIso,
+      timeMax: endIso,
+      items: [{ id: calendarId }],
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    return { mode: "error", error: "google_freebusy_failed", payload };
+  }
+
+  const busy = payload.calendars?.[calendarId]?.busy || [];
+  return { mode: "live", available: busy.length === 0, busy };
+}
+
+function calendarFollowUpReason(calendar) {
+  if (calendar.error === "calendar_slot_unavailable") return "calendar_slot_unavailable";
+  if (calendar.error === "google_event_create_failed") return "calendar_event_create_failed";
+  return "calendar_check_failed";
+}
+
+function calendarBlocksBooking(calendar) {
+  return calendar.mode === "needs_review" || calendar.mode === "error";
+}
+
 async function createCalendarBooking(lead) {
   if (lead.status !== "booked") {
     return { mode: "skipped", reason: "not_booked" };
@@ -698,31 +796,42 @@ async function createCalendarBooking(lead) {
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
   const calendarId = process.env.GOOGLE_CALENDAR_ID;
-  const startIso = lead.appointmentStartIso || lead.raw.appointmentStartIso || lead.raw.startIso;
-  const endIso = lead.appointmentEndIso || lead.raw.appointmentEndIso || lead.raw.endIso;
-
-  if (!clientId || !clientSecret || !refreshToken || !calendarId) {
-    return { mode: "error", error: "missing_google_calendar_configuration" };
-  }
+  const startIso = lead.appointmentStartIso || lead.raw?.appointmentStartIso || lead.raw?.startIso;
+  const endIso = lead.appointmentEndIso || lead.raw?.appointmentEndIso || lead.raw?.endIso;
 
   if (!startIso || !endIso) {
     return { mode: "needs_review", error: "missing_iso_booking_times" };
   }
 
-  const tokenForm = new URLSearchParams();
-  tokenForm.set("client_id", clientId);
-  tokenForm.set("client_secret", clientSecret);
-  tokenForm.set("refresh_token", refreshToken);
-  tokenForm.set("grant_type", "refresh_token");
+  if (googleCalendarMockEnabled()) {
+    if (mockCalendarBusyFor(lead)) {
+      return { mode: "needs_review", error: "calendar_slot_unavailable" };
+    }
+    return {
+      mode: "live",
+      eventId: `mock_${lead.id}`,
+      htmlLink: `https://calendar.example.test/events/${lead.id}`,
+    };
+  }
 
-  const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: tokenForm,
-  });
-  const tokenPayload = await tokenResponse.json();
-  if (!tokenResponse.ok) {
-    return { mode: "error", error: "google_token_refresh_failed", payload: tokenPayload };
+  if (!clientId || !clientSecret || !refreshToken || !calendarId) {
+    return { mode: "error", error: "missing_google_calendar_configuration" };
+  }
+
+  const token = await getGoogleAccessToken({ clientId, clientSecret, refreshToken });
+  if (token.mode === "error") return token;
+
+  if (calendarAvailabilityEnabled()) {
+    const availability = await checkGoogleCalendarAvailability({
+      accessToken: token.accessToken,
+      calendarId,
+      startIso,
+      endIso,
+    });
+    if (availability.mode === "error") return availability;
+    if (!availability.available) {
+      return { mode: "needs_review", error: "calendar_slot_unavailable", busy: availability.busy };
+    }
   }
 
   const event = {
@@ -745,7 +854,7 @@ async function createCalendarBooking(lead) {
     {
       method: "POST",
       headers: {
-        authorization: `Bearer ${tokenPayload.access_token}`,
+        authorization: `Bearer ${token.accessToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify(event),
@@ -807,9 +916,54 @@ async function sendCustomerConfirmation(lead) {
   return sendTwilioMessage({ to: lead.phone, body: message, channel: "sms" });
 }
 
+function normalizedLeadValue(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function sameLeadRequest(existing, candidate) {
+  const fields = [
+    "name",
+    "phone",
+    "service",
+    "address",
+    "urgency",
+    "requestedTime",
+    "bookedTime",
+    "appointmentStartIso",
+    "appointmentEndIso",
+  ];
+
+  return fields.every((field) => {
+    const nextValue = normalizedLeadValue(candidate[field]);
+    if (!nextValue) return true;
+    return normalizedLeadValue(existing[field]) === nextValue;
+  });
+}
+
+function bookingToolMessage(processed) {
+  if (processed.calendar?.error === "calendar_slot_unavailable") {
+    return "That time is not available. Ask the caller for another preferred time.";
+  }
+
+  if (processed.lead.status === "booked") {
+    return "The appointment has been saved.";
+  }
+
+  return "The owner has been notified for follow-up.";
+}
+
 async function processBooking(input) {
-  const existing = await findLeadByCallId(input.callId);
-  if (existing && existing.source === "vapi_tool") {
+  const normalized = normalizeLead(input);
+  const schedule = buildAppointmentSchedule(normalized);
+  const candidate = {
+    ...normalized,
+    callId: input.callId || "",
+    ...schedule,
+    status: schedule.scheduleStatus === "scheduled" ? "booked" : "needs_follow_up",
+  };
+
+  const existing = await findLeadByCallId(candidate.callId);
+  if (existing && existing.source === "vapi_tool" && (existing.status === "booked" || sameLeadRequest(existing, candidate))) {
     return {
       lead: existing,
       calendar: { mode: "skipped", reason: "duplicate_call" },
@@ -818,15 +972,30 @@ async function processBooking(input) {
     };
   }
 
-  const normalized = normalizeLead(input);
-  const schedule = buildAppointmentSchedule(normalized);
-  const lead = await saveLead({
-    ...normalized,
-    callId: input.callId || "",
-    ...schedule,
-    status: schedule.scheduleStatus === "scheduled" ? "booked" : "needs_follow_up",
-  });
+  let lead = existing && existing.source === "vapi_tool"
+    ? await updateStoredLead(existing.id, candidate)
+    : await saveLead(candidate);
+  if (!lead) lead = await saveLead(candidate);
+
   const calendar = await createCalendarBooking(lead);
+  if (calendar.mode === "live") {
+    lead = await updateStoredLead(lead.id, {
+      calendarStatus: calendar.mode,
+      calendarEventId: calendar.eventId || "",
+      calendarLink: calendar.htmlLink || "",
+    }) || lead;
+  } else if (calendarBlocksBooking(calendar)) {
+    const scheduleReason = calendarFollowUpReason(calendar);
+    lead = await updateStoredLead(lead.id, {
+      status: "needs_follow_up",
+      scheduleStatus: "needs_follow_up",
+      scheduleReason,
+      scheduleNote: scheduleReasonLabel(scheduleReason),
+      calendarStatus: calendar.mode,
+      calendarError: calendar.error || "",
+    }) || lead;
+  }
+
   const ownerNotification = await sendOwnerNotification(lead);
   const customerConfirmation = lead.status === "booked"
     ? await sendCustomerConfirmation(lead)
@@ -888,9 +1057,9 @@ async function handleVapiToolCalls(message) {
           scheduleReason: processed.lead.scheduleReason,
           appointmentStartIso: processed.lead.appointmentStartIso,
           appointmentEndIso: processed.lead.appointmentEndIso,
-          message: processed.lead.status === "booked"
-            ? "The appointment has been saved."
-            : "The owner has been notified for follow-up.",
+          calendarMode: processed.calendar?.mode || "",
+          calendarError: processed.calendar?.error || "",
+          message: bookingToolMessage(processed),
         }),
       });
     } else {

@@ -5,6 +5,7 @@ const baseUrl = `http://localhost:${port}`;
 const leadViewerToken = "smoke-token";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
+const busySlotCallId = `call_busy_slot_${Date.now()}`;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,9 +28,13 @@ const server = spawn(process.execPath, ["src/server.js"], {
   env: {
     ...process.env,
     PORT: port,
+    NODE_ENV: "test",
     LEAD_VIEWER_TOKEN: leadViewerToken,
     SEND_LIVE_MESSAGES: "false",
-    SEND_LIVE_CALENDAR: "false",
+    SEND_LIVE_CALENDAR: "true",
+    CHECK_CALENDAR_AVAILABILITY: "true",
+    MOCK_GOOGLE_CALENDAR: "true",
+    MOCK_GOOGLE_CALENDAR_BUSY_CALL_IDS: busySlotCallId,
     BUSINESS_TIMEZONE: "America/New_York",
     BUSINESS_HOURS_START: "08:00",
     BUSINESS_HOURS_END: "18:00",
@@ -88,6 +93,9 @@ try {
   if (matchingLeads[0].status !== "booked" || matchingLeads[0].scheduleStatus !== "scheduled") {
     throw new Error("expected in-hours booking to be scheduled");
   }
+  if (matchingLeads[0].calendarStatus !== "live" || !matchingLeads[0].calendarLink) {
+    throw new Error("expected in-hours booking to create a calendar event");
+  }
 
   await post("/webhooks/voice", {
     message: {
@@ -116,6 +124,35 @@ try {
   if (!afterHoursLead) throw new Error("expected after-hours lead to be saved");
   if (afterHoursLead.status !== "needs_follow_up" || afterHoursLead.scheduleReason !== "outside_business_hours") {
     throw new Error("expected after-hours lead to need follow-up");
+  }
+
+  await post("/webhooks/voice", {
+    message: {
+      type: "tool-calls",
+      call: { id: busySlotCallId },
+      toolCallList: [
+        {
+          id: "tool_smoke_3",
+          name: "bookAppointment",
+          parameters: {
+            name: "Busy Calendar Test",
+            phone: "+15555550125",
+            service: "roof inspection",
+            address: "789 Main St",
+            urgency: "normal",
+            bookedTime: "Friday 3 PM",
+            summary: "Busy calendar slot should need review.",
+          },
+        },
+      ],
+    },
+  });
+
+  const busyPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const busyLead = busyPayload.leads.find((lead) => lead.callId === busySlotCallId);
+  if (!busyLead) throw new Error("expected busy calendar lead to be saved");
+  if (busyLead.status !== "needs_follow_up" || busyLead.scheduleReason !== "calendar_slot_unavailable") {
+    throw new Error("expected busy calendar slot to need follow-up");
   }
 
   console.log("Smoke test passed");

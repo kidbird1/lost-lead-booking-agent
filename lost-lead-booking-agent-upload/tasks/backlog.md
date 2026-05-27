@@ -29,7 +29,7 @@
 - [x] Add protected lead viewer endpoint
 - [x] Add protected lead follow-up page
 - [x] Add business-hours scheduling guard
-- [ ] Connect live calendar availability
+- [x] Connect live calendar availability
 
 ## Phase 3 - Test
 
@@ -43,6 +43,7 @@
 - [x] Confirm lead follow-up page loads locally
 - [x] Prevent duplicate lead records from Vapi end-of-call fallback
 - [x] Confirm after-hours appointment requests are flagged for follow-up
+- [x] Confirm busy calendar slots are flagged for follow-up
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends
 
