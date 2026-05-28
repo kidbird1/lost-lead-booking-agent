@@ -31,6 +31,8 @@
 - [x] Add business-hours scheduling guard
 - [x] Connect live calendar availability
 - [x] Add available-slot lookup tool
+- [x] Add reusable business profile config
+- [ ] Build client onboarding form
 
 ## Phase 3 - Test
 
@@ -46,6 +48,7 @@
 - [x] Confirm after-hours appointment requests are flagged for follow-up
 - [x] Confirm busy calendar slots are flagged for follow-up
 - [x] Confirm available-slot lookup returns open times
+- [x] Confirm generated agent context uses business profile
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends
 

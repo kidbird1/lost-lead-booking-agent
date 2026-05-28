@@ -17,7 +17,15 @@ services:
       - key: PREFER_CUSTOMER_WHATSAPP
         value: "false"
       - key: BUSINESS_NAME
-        value: Demo Roofing Co.
+        value: Demo Home Services
+      - key: ASSISTANT_NAME
+        value: Riley
+      - key: BUSINESS_INDUSTRY
+        value: home services
+      - key: BUSINESS_SERVICES
+        value: repair, inspection, maintenance
+      - key: BUSINESS_SERVICE_AREAS
+        value: 33487, 33485
       - key: BUSINESS_TIMEZONE
         value: America/New_York
       - key: BUSINESS_HOURS_START

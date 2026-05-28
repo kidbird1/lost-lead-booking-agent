@@ -72,6 +72,12 @@ The JSON lead list is available at:
 GET /api/leads?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+The generated Vapi prompt and first message are available at:
+
+```text
+GET /api/agent-context?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
 Open appointment slots are available at:
 
 ```text

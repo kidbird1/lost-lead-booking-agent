@@ -4,6 +4,27 @@
 
 Connect Vapi to our Render backend.
 
+## Business Profile
+
+First configure the business in Render:
+
+```text
+BUSINESS_NAME=
+ASSISTANT_NAME=
+BUSINESS_INDUSTRY=
+BUSINESS_SERVICES=
+BUSINESS_SERVICE_AREAS=
+```
+
+Then open:
+
+```text
+https://YOUR-RENDER-APP.onrender.com/api/agent-context?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Copy the returned `firstMessage` into Vapi's first message field.
+Copy the returned `prompt` into Vapi's system prompt field.
+
 ## Server URL
 
 After deploying to Render:

@@ -7,6 +7,13 @@ const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
+const businessProfile = {
+  businessName: "Blue Sky Plumbing",
+  assistantName: "Riley",
+  industry: "plumbing",
+  services: ["drain cleaning", "leak repair", "water heater service"],
+  serviceAreas: ["33487", "33485"],
+};
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +50,7 @@ const server = spawn(process.execPath, ["src/server.js"], {
     AVAILABLE_SLOT_INTERVAL_MINUTES: "60",
     MAX_AVAILABLE_SLOTS: "3",
     SCHEDULING_NOW_ISO: "2026-05-27T10:00:00-04:00",
+    BUSINESS_PROFILE_JSON: JSON.stringify(businessProfile),
   },
   stdio: "inherit",
 });
@@ -52,6 +60,15 @@ try {
 
   const health = await fetch(`${baseUrl}/health`).then((res) => res.json());
   if (!health.ok) throw new Error("health check failed");
+
+  const agentContext = await fetch(`${baseUrl}/api/agent-context?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!agentContext.ok || agentContext.profile.businessName !== businessProfile.businessName) {
+    throw new Error("expected agent context to use business profile");
+  }
+  if (!agentContext.prompt.includes("Blue Sky Plumbing") || !agentContext.firstMessage.includes("Blue Sky Plumbing")) {
+    throw new Error("expected generated prompt and first message to use business profile");
+  }
 
   const availabilityResult = await post("/webhooks/voice", {
     message: {

@@ -11,6 +11,20 @@ const leadsFile = new URL("../data/leads.json", import.meta.url);
 const eventsFile = new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
 const defaultBusinessTimezone = "America/New_York";
+const defaultBusinessName = "Demo Home Services";
+const defaultAssistantName = "Riley";
+const defaultIntakeFields = [
+  "service needed",
+  "caller name",
+  "phone number",
+  "address or ZIP code",
+  "preferred day or time",
+];
+const defaultNeverSay = [
+  "Do not quote exact prices.",
+  "Do not promise emergency arrival.",
+  "Do not diagnose dangerous problems.",
+];
 
 async function ensureStore() {
   if (!existsSync(dataDir)) {
@@ -95,6 +109,114 @@ function formatDate(value) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function listFromValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function listWithFallback(value, fallback = []) {
+  const list = listFromValue(value);
+  return list.length ? list : fallback;
+}
+
+function businessProfile() {
+  const configured = parseJsonObject(process.env.BUSINESS_PROFILE_JSON);
+  return {
+    businessName: configured.businessName || process.env.BUSINESS_NAME || defaultBusinessName,
+    assistantName: configured.assistantName || process.env.ASSISTANT_NAME || defaultAssistantName,
+    industry: configured.industry || process.env.BUSINESS_INDUSTRY || "home services",
+    ownerName: configured.ownerName || process.env.OWNER_NAME || "",
+    services: listWithFallback(configured.services || process.env.BUSINESS_SERVICES, []),
+    serviceAreas: listWithFallback(configured.serviceAreas || process.env.BUSINESS_SERVICE_AREAS, []),
+    intakeFields: listWithFallback(configured.intakeFields || process.env.BUSINESS_INTAKE_FIELDS, defaultIntakeFields),
+    neverSay: listWithFallback(configured.neverSay || process.env.BUSINESS_NEVER_SAY, defaultNeverSay),
+    greeting: configured.greeting || process.env.FIRST_MESSAGE || "",
+    bookingRules: {
+      afterHours: configured.bookingRules?.afterHours || "Collect the details and mark the lead for follow-up.",
+      emergency: configured.bookingRules?.emergency || "Tell the caller to contact emergency services if there is immediate danger, then collect details if they want to continue.",
+      ownerReview: configured.bookingRules?.ownerReview || "If unclear, save the lead for owner review.",
+    },
+  };
+}
+
+function publicBusinessProfile(profile = businessProfile()) {
+  return {
+    businessName: profile.businessName,
+    assistantName: profile.assistantName,
+    industry: profile.industry,
+    services: profile.services,
+    serviceAreas: profile.serviceAreas,
+    intakeFields: profile.intakeFields,
+    neverSay: profile.neverSay,
+    greeting: firstMessageForProfile(profile),
+    bookingRules: profile.bookingRules,
+  };
+}
+
+function firstMessageForProfile(profile = businessProfile()) {
+  return profile.greeting
+    || `Thanks for calling ${profile.businessName}. This is ${profile.assistantName}. What can I help you with today?`;
+}
+
+function buildVapiPrompt(profile = businessProfile()) {
+  const serviceText = profile.services.length
+    ? `Common services: ${profile.services.join(", ")}.`
+    : "Ask what service or help the caller needs.";
+  const areaText = profile.serviceAreas.length
+    ? `Normal service areas: ${profile.serviceAreas.join(", ")}. If the caller may be outside this area, save the lead for owner review.`
+    : "If the caller may be outside the normal service area, save the lead for owner review.";
+
+  return [
+    `You are ${profile.assistantName}, the front desk booking assistant for ${profile.businessName}.`,
+    "",
+    `Business type: ${profile.industry}.`,
+    "Your job is to answer calls, collect job details, check available times when needed, and save appointment requests.",
+    "",
+    "Sound like a calm, helpful receptionist.",
+    "Use short sentences.",
+    "Ask one question at a time.",
+    "Do not ask for everything at once.",
+    "",
+    serviceText,
+    areaText,
+    "",
+    "Collect these details:",
+    ...profile.intakeFields.map((field, index) => `${index + 1}. ${field}`),
+    "",
+    "If the caller asks what times are open, call getAvailableSlots.",
+    "Before offering exact appointment options, call getAvailableSlots.",
+    "Offer up to three open times.",
+    "When the caller chooses one, call bookAppointment with the chosen appointmentStartIso and appointmentEndIso.",
+    "",
+    "After bookAppointment succeeds, treat the appointment request as saved.",
+    "Do not say there was trouble saving unless the tool fails.",
+    "If the caller says no, that's it, thank you, or goodbye, say the goodbye sentence first, then call end_call_tool.",
+    "",
+    "Never:",
+    ...profile.neverSay.map((rule) => `- ${rule}`),
+    "",
+    `Goodbye sentence: "Thanks for calling ${profile.businessName}. Have a great day."`,
+  ].join("\n");
 }
 
 function businessTimeZone() {
@@ -393,6 +515,7 @@ function renderUnauthorizedLeadViewer() {
 }
 
 function renderLeadsPage(leads, url) {
+  const profile = businessProfile();
   const visibleLeads = leads
     .map(publicLead)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -446,7 +569,7 @@ function renderLeadsPage(leads, url) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lead Follow-Up</title>
+  <title>${escapeHtml(profile.businessName)} Lead Follow-Up</title>
   <style>
     :root {
       color-scheme: light;
@@ -501,8 +624,8 @@ function renderLeadsPage(leads, url) {
 <body>
   <header>
     <div class="wrap">
-      <h1>Lead Follow-Up</h1>
-      <p class="sub">Call leads from Vapi and Twilio, ready for owner follow-up.</p>
+      <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up.</p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1086,8 +1209,11 @@ async function createCalendarBooking(lead) {
 }
 
 async function sendOwnerNotification(lead) {
+  const profile = businessProfile();
   const message = [
-    lead.status === "booked" ? "New booked job:" : "New lead needs review:",
+    lead.status === "booked"
+      ? `New booked job for ${profile.businessName}:`
+      : `New lead needs review for ${profile.businessName}:`,
     `Name: ${lead.name || "Unknown"}`,
     `Phone: ${lead.phone || "Unknown"}`,
     `Service: ${lead.service || "Unknown"}`,
@@ -1122,7 +1248,7 @@ async function sendCustomerConfirmation(lead) {
     return { mode: "skipped", reason: "missing_phone_or_time" };
   }
 
-  const businessName = process.env.BUSINESS_NAME || "the business";
+  const businessName = businessProfile().businessName;
   const message = `Your appointment with ${businessName} is booked for ${lead.bookedTime || lead.requestedTime}. Reply here if you need to update anything.`;
 
   if (process.env.PREFER_CUSTOMER_WHATSAPP === "true" && process.env.TWILIO_WHATSAPP_FROM) {
@@ -1410,6 +1536,24 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agent-context") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const profile = businessProfile();
+      return json(res, 200, {
+        ok: true,
+        profile: publicBusinessProfile(profile),
+        firstMessage: firstMessageForProfile(profile),
+        prompt: buildVapiPrompt(profile),
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/api/availability") {

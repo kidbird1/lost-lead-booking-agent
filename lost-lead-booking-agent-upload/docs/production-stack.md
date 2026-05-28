@@ -80,6 +80,21 @@ Retell as backup.
 OpenAI Realtime later if we need custom control.
 ```
 
+## Client Profile
+
+One deployed service is configured for one client with Render env vars:
+
+- business name
+- assistant name
+- industry
+- services
+- service area
+- business hours
+- calendar credentials
+- owner phone and WhatsApp
+
+The backend generates the Vapi first message and prompt from `/api/agent-context`.
+
 ## MVP Flow
 
 ```text

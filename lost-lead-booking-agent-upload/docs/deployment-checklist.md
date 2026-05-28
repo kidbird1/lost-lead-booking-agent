@@ -27,7 +27,17 @@ Start command: npm start
 ```
 
 4. Add env vars from `.env.example`.
-5. Keep these off until testing:
+5. Configure the client profile:
+
+```text
+BUSINESS_NAME=
+ASSISTANT_NAME=
+BUSINESS_INDUSTRY=
+BUSINESS_SERVICES=
+BUSINESS_SERVICE_AREAS=
+```
+
+6. Keep these off until testing:
 
 ```text
 SEND_LIVE_MESSAGES=false
@@ -37,15 +47,16 @@ SEND_LIVE_CALENDAR=false
 ## Connect Vapi
 
 1. Create Vapi assistant.
-2. Paste prompt from `docs/vapi-setup.md`.
-3. Add `bookAppointment` tool.
-4. Set server URL:
+2. Open `/api/agent-context?token=YOUR_LEAD_VIEWER_TOKEN`.
+3. Copy the generated `firstMessage` and `prompt` into Vapi.
+4. Add `bookAppointment` tool.
+5. Set server URL:
 
 ```text
 https://YOUR-RENDER-APP.onrender.com/webhooks/voice
 ```
 
-5. Run a test call.
+6. Run a test call.
 
 ## Connect Twilio
 
