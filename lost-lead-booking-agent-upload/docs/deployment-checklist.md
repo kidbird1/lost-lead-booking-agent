@@ -37,7 +37,8 @@ BUSINESS_SERVICES=
 BUSINESS_SERVICE_AREAS=
 ```
 
-6. Keep these off until testing:
+6. Open `/admin/profile?token=YOUR_LEAD_VIEWER_TOKEN` and confirm the profile looks right.
+7. Keep these off until testing:
 
 ```text
 SEND_LIVE_MESSAGES=false

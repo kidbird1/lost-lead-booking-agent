@@ -28,3 +28,4 @@
 ## 2026-05-28
 
 - Business-specific knowledge belongs in configuration, not code. The MVP uses one business profile per deployed Render service; multi-tenant profile routing can come later.
+- Profile setup should be copy-friendly and protected by the same lead viewer token. Editing Render env vars from the app is deferred until after the pilot proves the setup flow.

@@ -25,6 +25,12 @@ https://YOUR-RENDER-APP.onrender.com/api/agent-context?token=YOUR_LEAD_VIEWER_TO
 Copy the returned `firstMessage` into Vapi's first message field.
 Copy the returned `prompt` into Vapi's system prompt field.
 
+For an easier copy page, use:
+
+```text
+https://YOUR-RENDER-APP.onrender.com/admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
 ## Server URL
 
 After deploying to Render:

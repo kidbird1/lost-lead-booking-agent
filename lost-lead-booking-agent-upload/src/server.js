@@ -426,6 +426,16 @@ function isLeadViewerAuthorized(req, url) {
   return requestKey === configuredKey || auth === `Bearer ${configuredKey}`;
 }
 
+function requestBaseUrl(req, url) {
+  const protocol = String(req.headers["x-forwarded-proto"] || url.protocol.replace(":", "") || "http")
+    .split(",")[0]
+    .trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || url.host)
+    .split(",")[0]
+    .trim();
+  return `${protocol}://${host}`;
+}
+
 function publicLead(lead) {
   return {
     id: lead.id,
@@ -510,6 +520,149 @@ function renderUnauthorizedLeadViewer() {
     <h1>Unauthorized</h1>
     <p>Use the private lead viewer link from Render.</p>
   </main>
+</body>
+</html>`;
+}
+
+function renderProfilePage(req, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const firstMessage = firstMessageForProfile(profile);
+  const prompt = buildVapiPrompt(profile);
+  const baseUrl = requestBaseUrl(req, url);
+  const webhookUrl = `${baseUrl}/webhooks/voice`;
+  const agentContextUrl = `${baseUrl}/api/agent-context${suffix}`;
+  const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
+  const envSnippet = [
+    `BUSINESS_NAME=${profile.businessName}`,
+    `ASSISTANT_NAME=${profile.assistantName}`,
+    `BUSINESS_INDUSTRY=${profile.industry}`,
+    `BUSINESS_SERVICES=${profile.services.join(", ")}`,
+    `BUSINESS_SERVICE_AREAS=${profile.serviceAreas.join(", ")}`,
+    `BUSINESS_TIMEZONE=${businessTimeZone()}`,
+    `BUSINESS_HOURS_START=${process.env.BUSINESS_HOURS_START || "08:00"}`,
+    `BUSINESS_HOURS_END=${process.env.BUSINESS_HOURS_END || "18:00"}`,
+    `DEFAULT_APPOINTMENT_MINUTES=${appointmentDurationMinutes()}`,
+  ].join("\n");
+  const services = profile.services.length ? profile.services.join(", ") : "Not set";
+  const areas = profile.serviceAreas.length ? profile.serviceAreas.join(", ") : "Not set";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(profile.businessName)} Setup</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+      --soft: #f4f0e7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    p { color: var(--muted); line-height: 1.45; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 22px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .wide { grid-column: 1 / -1; }
+    dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+    dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    textarea, input { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 12px; font: 14px/1.45 Consolas, monospace; color: var(--ink); background: #fff; }
+    textarea { min-height: 170px; resize: vertical; }
+    .short { min-height: 88px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .hint { margin: 8px 0 0; font-size: 13px; }
+    .pill { display: inline-block; border-radius: 999px; background: var(--soft); padding: 6px 10px; margin: 4px 4px 0 0; }
+    @media (max-width: 760px) {
+      .top, .grid { display: block; }
+      .links { justify-content: start; margin-top: 14px; }
+      .card { margin-bottom: 14px; }
+      dl { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>${escapeHtml(profile.businessName)} Setup</h1>
+        <p>Use this page to copy the current client profile into Vapi.</p>
+      </div>
+      <nav class="links" aria-label="Setup links">
+        <a href="${escapeHtml(leadsUrl)}">Lead Viewer</a>
+        <a href="${escapeHtml(agentContextUrl)}">Agent JSON</a>
+      </nav>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Client Profile</h2>
+        <dl>
+          <div><dt>Business</dt><dd>${escapeHtml(profile.businessName)}</dd></div>
+          <div><dt>Assistant</dt><dd>${escapeHtml(profile.assistantName)}</dd></div>
+          <div><dt>Industry</dt><dd>${escapeHtml(profile.industry)}</dd></div>
+          <div><dt>Timezone</dt><dd>${escapeHtml(businessTimeZone())}</dd></div>
+          <div><dt>Services</dt><dd>${escapeHtml(services)}</dd></div>
+          <div><dt>Service Areas</dt><dd>${escapeHtml(areas)}</dd></div>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Vapi Tool URLs</h2>
+        <label>Server URL</label>
+        <input readonly value="${escapeHtml(webhookUrl)}">
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(webhookUrl)}">Copy Server URL</button>
+        </div>
+        <p class="hint">Use this same URL for bookAppointment and getAvailableSlots.</p>
+      </article>
+
+      <article class="card wide">
+        <h2>First Message</h2>
+        <textarea class="short" readonly>${escapeHtml(firstMessage)}</textarea>
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(firstMessage)}">Copy First Message</button>
+        </div>
+      </article>
+
+      <article class="card wide">
+        <h2>System Prompt</h2>
+        <textarea readonly>${escapeHtml(prompt)}</textarea>
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(prompt)}">Copy Prompt</button>
+        </div>
+      </article>
+
+      <article class="card wide">
+        <h2>Render Env Snippet</h2>
+        <textarea class="short" readonly>${escapeHtml(envSnippet)}</textarea>
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(envSnippet)}">Copy Env Snippet</button>
+        </div>
+      </article>
+    </section>
+  </main>
+  <script>
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(button.dataset.copy || "");
+        const original = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = original; }, 1200);
+      });
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -625,7 +778,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up.</p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1510,6 +1663,18 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, service: "lost-lead-booking-agent" });
+    }
+
+    if (req.method === "GET" && (url.pathname === "/profile" || url.pathname === "/admin/profile")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      return html(res, 200, renderProfilePage(req, url));
     }
 
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {

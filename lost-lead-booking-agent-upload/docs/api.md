@@ -51,6 +51,14 @@ Example:
 GET /admin/leads?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+Client setup page:
+
+```text
+GET /admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Shows the current business profile, Vapi first message, Vapi system prompt, tool server URL, and Render env snippet.
+
 Also supported for compatibility:
 
 ```text

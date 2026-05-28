@@ -70,6 +70,12 @@ try {
     throw new Error("expected generated prompt and first message to use business profile");
   }
 
+  const profilePage = await fetch(`${baseUrl}/admin/profile?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!profilePage.includes("Blue Sky Plumbing Setup") || !profilePage.includes("Copy Prompt")) {
+    throw new Error("expected protected profile setup page to render");
+  }
+
   const availabilityResult = await post("/webhooks/voice", {
     message: {
       type: "tool-calls",

@@ -58,6 +58,14 @@ This returns:
 
 Copy those into Vapi for the client.
 
+For a copy-friendly setup page, open:
+
+```text
+GET /admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+This page shows the profile, prompt, first message, webhook URL, and Render env snippet.
+
 ## Scale Rule
 
 For the MVP, use one Render service per client.
