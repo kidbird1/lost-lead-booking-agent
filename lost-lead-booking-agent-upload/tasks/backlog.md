@@ -35,6 +35,7 @@
 - [x] Add protected profile setup page
 - [x] Build client onboarding form
 - [x] Add protected CSV lead export
+- [x] Add GitHub handoff docs for future LLM continuation
 
 ## Phase 3 - Test
 
