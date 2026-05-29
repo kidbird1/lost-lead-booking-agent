@@ -51,6 +51,28 @@ Example:
 GET /admin/leads?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+Client setup page:
+
+```text
+GET /admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Shows the current business profile, Vapi first message, Vapi system prompt, tool server URL, and Render env snippet.
+
+Client onboarding form:
+
+```text
+GET /admin/onboarding?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Profile preview API:
+
+```text
+POST /api/profile-preview?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Returns generated Vapi prompt, first message, env snippet, and business profile JSON from submitted client details.
+
 Also supported for compatibility:
 
 ```text
@@ -70,6 +92,12 @@ The JSON lead list is available at:
 
 ```text
 GET /api/leads?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+The generated Vapi prompt and first message are available at:
+
+```text
+GET /api/agent-context?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
 Open appointment slots are available at:

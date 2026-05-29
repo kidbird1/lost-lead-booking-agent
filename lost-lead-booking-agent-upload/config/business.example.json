@@ -1,18 +1,25 @@
 {
-  "businessName": "Demo Roofing Co.",
+  "businessName": "Demo Home Services",
+  "assistantName": "Riley",
+  "industry": "home services",
   "ownerName": "Owner",
   "ownerPhone": "+15555550100",
   "ownerWhatsApp": "+15555550100",
   "services": [
-    "roof repair",
-    "roof replacement",
-    "leak inspection",
-    "storm damage inspection"
+    "repair",
+    "inspection",
+    "maintenance"
   ],
   "serviceAreas": [
-    "Tampa",
-    "St. Petersburg",
-    "Clearwater"
+    "33487",
+    "33485"
+  ],
+  "intakeFields": [
+    "service needed",
+    "caller name",
+    "phone number",
+    "address or ZIP code",
+    "preferred day or time"
   ],
   "bookingRules": {
     "defaultAppointmentLengthMinutes": 60,

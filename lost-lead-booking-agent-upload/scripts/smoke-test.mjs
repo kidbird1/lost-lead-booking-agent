@@ -7,6 +7,13 @@ const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
+const businessProfile = {
+  businessName: "Blue Sky Plumbing",
+  assistantName: "Riley",
+  industry: "plumbing",
+  services: ["drain cleaning", "leak repair", "water heater service"],
+  serviceAreas: ["33487", "33485"],
+};
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -43,6 +50,7 @@ const server = spawn(process.execPath, ["src/server.js"], {
     AVAILABLE_SLOT_INTERVAL_MINUTES: "60",
     MAX_AVAILABLE_SLOTS: "3",
     SCHEDULING_NOW_ISO: "2026-05-27T10:00:00-04:00",
+    BUSINESS_PROFILE_JSON: JSON.stringify(businessProfile),
   },
   stdio: "inherit",
 });
@@ -52,6 +60,38 @@ try {
 
   const health = await fetch(`${baseUrl}/health`).then((res) => res.json());
   if (!health.ok) throw new Error("health check failed");
+
+  const agentContext = await fetch(`${baseUrl}/api/agent-context?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!agentContext.ok || agentContext.profile.businessName !== businessProfile.businessName) {
+    throw new Error("expected agent context to use business profile");
+  }
+  if (!agentContext.prompt.includes("Blue Sky Plumbing") || !agentContext.firstMessage.includes("Blue Sky Plumbing")) {
+    throw new Error("expected generated prompt and first message to use business profile");
+  }
+
+  const profilePage = await fetch(`${baseUrl}/admin/profile?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!profilePage.includes("Blue Sky Plumbing Setup") || !profilePage.includes("Copy Prompt")) {
+    throw new Error("expected protected profile setup page to render");
+  }
+
+  const onboardingPage = await fetch(`${baseUrl}/admin/onboarding?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!onboardingPage.includes("Client Onboarding") || !onboardingPage.includes("Generate")) {
+    throw new Error("expected protected onboarding page to render");
+  }
+
+  const previewResult = await post(`/api/profile-preview?token=${leadViewerToken}`, {
+    businessName: "Bright Root Dental",
+    assistantName: "Riley",
+    industry: "dental office",
+    services: "cleanings, emergency dental visits",
+    serviceAreas: "33487, Boca Raton",
+  });
+  if (!previewResult.prompt.includes("Bright Root Dental") || !previewResult.envSnippet.includes("BUSINESS_NAME=Bright Root Dental")) {
+    throw new Error("expected onboarding preview to generate profile output");
+  }
 
   const availabilityResult = await post("/webhooks/voice", {
     message: {

@@ -11,6 +11,20 @@ const leadsFile = new URL("../data/leads.json", import.meta.url);
 const eventsFile = new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
 const defaultBusinessTimezone = "America/New_York";
+const defaultBusinessName = "Demo Home Services";
+const defaultAssistantName = "Riley";
+const defaultIntakeFields = [
+  "service needed",
+  "caller name",
+  "phone number",
+  "address or ZIP code",
+  "preferred day or time",
+];
+const defaultNeverSay = [
+  "Do not quote exact prices.",
+  "Do not promise emergency arrival.",
+  "Do not diagnose dangerous problems.",
+];
 
 async function ensureStore() {
   if (!existsSync(dataDir)) {
@@ -95,6 +109,154 @@ function formatDate(value) {
     hour: "numeric",
     minute: "2-digit",
   });
+}
+
+function parseJsonObject(value) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function listFromValue(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
+}
+
+function listWithFallback(value, fallback = []) {
+  const list = listFromValue(value);
+  return list.length ? list : fallback;
+}
+
+function businessProfile() {
+  const configured = parseJsonObject(process.env.BUSINESS_PROFILE_JSON);
+  return {
+    businessName: configured.businessName || process.env.BUSINESS_NAME || defaultBusinessName,
+    assistantName: configured.assistantName || process.env.ASSISTANT_NAME || defaultAssistantName,
+    industry: configured.industry || process.env.BUSINESS_INDUSTRY || "home services",
+    ownerName: configured.ownerName || process.env.OWNER_NAME || "",
+    services: listWithFallback(configured.services || process.env.BUSINESS_SERVICES, []),
+    serviceAreas: listWithFallback(configured.serviceAreas || process.env.BUSINESS_SERVICE_AREAS, []),
+    intakeFields: listWithFallback(configured.intakeFields || process.env.BUSINESS_INTAKE_FIELDS, defaultIntakeFields),
+    neverSay: listWithFallback(configured.neverSay || process.env.BUSINESS_NEVER_SAY, defaultNeverSay),
+    greeting: configured.greeting || process.env.FIRST_MESSAGE || "",
+    bookingRules: {
+      afterHours: configured.bookingRules?.afterHours || "Collect the details and mark the lead for follow-up.",
+      emergency: configured.bookingRules?.emergency || "Tell the caller to contact emergency services if there is immediate danger, then collect details if they want to continue.",
+      ownerReview: configured.bookingRules?.ownerReview || "If unclear, save the lead for owner review.",
+    },
+  };
+}
+
+function profileFromInput(input = {}) {
+  const configured = parseJsonObject(input.businessProfileJson);
+  const source = Object.keys(configured).length ? configured : input;
+  return {
+    businessName: source.businessName || defaultBusinessName,
+    assistantName: source.assistantName || defaultAssistantName,
+    industry: source.industry || "home services",
+    ownerName: source.ownerName || "",
+    services: listWithFallback(source.services, []),
+    serviceAreas: listWithFallback(source.serviceAreas, []),
+    intakeFields: listWithFallback(source.intakeFields, defaultIntakeFields),
+    neverSay: listWithFallback(source.neverSay, defaultNeverSay),
+    greeting: source.greeting || source.firstMessage || "",
+    bookingRules: {
+      afterHours: source.bookingRules?.afterHours || "Collect the details and mark the lead for follow-up.",
+      emergency: source.bookingRules?.emergency || "Tell the caller to contact emergency services if there is immediate danger, then collect details if they want to continue.",
+      ownerReview: source.bookingRules?.ownerReview || "If unclear, save the lead for owner review.",
+    },
+  };
+}
+
+function businessProfileJson(profile) {
+  return JSON.stringify(publicBusinessProfile(profile), null, 2);
+}
+
+function profileEnvSnippet(profile) {
+  return [
+    `BUSINESS_NAME=${profile.businessName}`,
+    `ASSISTANT_NAME=${profile.assistantName}`,
+    `BUSINESS_INDUSTRY=${profile.industry}`,
+    `BUSINESS_SERVICES=${profile.services.join(", ")}`,
+    `BUSINESS_SERVICE_AREAS=${profile.serviceAreas.join(", ")}`,
+    `BUSINESS_TIMEZONE=${businessTimeZone()}`,
+    `BUSINESS_HOURS_START=${process.env.BUSINESS_HOURS_START || "08:00"}`,
+    `BUSINESS_HOURS_END=${process.env.BUSINESS_HOURS_END || "18:00"}`,
+    `DEFAULT_APPOINTMENT_MINUTES=${appointmentDurationMinutes()}`,
+    `BUSINESS_PROFILE_JSON=${businessProfileJson(profile).replace(/\s+/g, " ")}`,
+  ].join("\n");
+}
+
+function publicBusinessProfile(profile = businessProfile()) {
+  return {
+    businessName: profile.businessName,
+    assistantName: profile.assistantName,
+    industry: profile.industry,
+    services: profile.services,
+    serviceAreas: profile.serviceAreas,
+    intakeFields: profile.intakeFields,
+    neverSay: profile.neverSay,
+    greeting: firstMessageForProfile(profile),
+    bookingRules: profile.bookingRules,
+  };
+}
+
+function firstMessageForProfile(profile = businessProfile()) {
+  return profile.greeting
+    || `Thanks for calling ${profile.businessName}. This is ${profile.assistantName}. What can I help you with today?`;
+}
+
+function buildVapiPrompt(profile = businessProfile()) {
+  const serviceText = profile.services.length
+    ? `Common services: ${profile.services.join(", ")}.`
+    : "Ask what service or help the caller needs.";
+  const areaText = profile.serviceAreas.length
+    ? `Normal service areas: ${profile.serviceAreas.join(", ")}. If the caller may be outside this area, save the lead for owner review.`
+    : "If the caller may be outside the normal service area, save the lead for owner review.";
+
+  return [
+    `You are ${profile.assistantName}, the front desk booking assistant for ${profile.businessName}.`,
+    "",
+    `Business type: ${profile.industry}.`,
+    "Your job is to answer calls, collect job details, check available times when needed, and save appointment requests.",
+    "",
+    "Sound like a calm, helpful receptionist.",
+    "Use short sentences.",
+    "Ask one question at a time.",
+    "Do not ask for everything at once.",
+    "",
+    serviceText,
+    areaText,
+    "",
+    "Collect these details:",
+    ...profile.intakeFields.map((field, index) => `${index + 1}. ${field}`),
+    "",
+    "If the caller asks what times are open, call getAvailableSlots.",
+    "Before offering exact appointment options, call getAvailableSlots.",
+    "Offer up to three open times.",
+    "When the caller chooses one, call bookAppointment with the chosen appointmentStartIso and appointmentEndIso.",
+    "",
+    "After bookAppointment succeeds, treat the appointment request as saved.",
+    "Do not say there was trouble saving unless the tool fails.",
+    "If the caller says no, that's it, thank you, or goodbye, say the goodbye sentence first, then call end_call_tool.",
+    "",
+    "Never:",
+    ...profile.neverSay.map((rule) => `- ${rule}`),
+    "",
+    `Goodbye sentence: "Thanks for calling ${profile.businessName}. Have a great day."`,
+  ].join("\n");
 }
 
 function businessTimeZone() {
@@ -304,6 +466,16 @@ function isLeadViewerAuthorized(req, url) {
   return requestKey === configuredKey || auth === `Bearer ${configuredKey}`;
 }
 
+function requestBaseUrl(req, url) {
+  const protocol = String(req.headers["x-forwarded-proto"] || url.protocol.replace(":", "") || "http")
+    .split(",")[0]
+    .trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || url.host)
+    .split(",")[0]
+    .trim();
+  return `${protocol}://${host}`;
+}
+
 function publicLead(lead) {
   return {
     id: lead.id,
@@ -392,7 +564,280 @@ function renderUnauthorizedLeadViewer() {
 </html>`;
 }
 
+function renderProfilePage(req, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const firstMessage = firstMessageForProfile(profile);
+  const prompt = buildVapiPrompt(profile);
+  const baseUrl = requestBaseUrl(req, url);
+  const webhookUrl = `${baseUrl}/webhooks/voice`;
+  const agentContextUrl = `${baseUrl}/api/agent-context${suffix}`;
+  const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
+  const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
+  const envSnippet = profileEnvSnippet(profile);
+  const services = profile.services.length ? profile.services.join(", ") : "Not set";
+  const areas = profile.serviceAreas.length ? profile.serviceAreas.join(", ") : "Not set";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(profile.businessName)} Setup</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+      --soft: #f4f0e7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1100px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    p { color: var(--muted); line-height: 1.45; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 22px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .wide { grid-column: 1 / -1; }
+    dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+    dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    textarea, input { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 12px; font: 14px/1.45 Consolas, monospace; color: var(--ink); background: #fff; }
+    textarea { min-height: 170px; resize: vertical; }
+    .short { min-height: 88px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .hint { margin: 8px 0 0; font-size: 13px; }
+    .pill { display: inline-block; border-radius: 999px; background: var(--soft); padding: 6px 10px; margin: 4px 4px 0 0; }
+    @media (max-width: 760px) {
+      .top, .grid { display: block; }
+      .links { justify-content: start; margin-top: 14px; }
+      .card { margin-bottom: 14px; }
+      dl { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>${escapeHtml(profile.businessName)} Setup</h1>
+        <p>Use this page to copy the current client profile into Vapi.</p>
+      </div>
+      <nav class="links" aria-label="Setup links">
+        <a href="${escapeHtml(leadsUrl)}">Lead Viewer</a>
+        <a href="${escapeHtml(onboardingUrl)}">Onboarding</a>
+        <a href="${escapeHtml(agentContextUrl)}">Agent JSON</a>
+      </nav>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Client Profile</h2>
+        <dl>
+          <div><dt>Business</dt><dd>${escapeHtml(profile.businessName)}</dd></div>
+          <div><dt>Assistant</dt><dd>${escapeHtml(profile.assistantName)}</dd></div>
+          <div><dt>Industry</dt><dd>${escapeHtml(profile.industry)}</dd></div>
+          <div><dt>Timezone</dt><dd>${escapeHtml(businessTimeZone())}</dd></div>
+          <div><dt>Services</dt><dd>${escapeHtml(services)}</dd></div>
+          <div><dt>Service Areas</dt><dd>${escapeHtml(areas)}</dd></div>
+        </dl>
+      </article>
+
+      <article class="card">
+        <h2>Vapi Tool URLs</h2>
+        <label>Server URL</label>
+        <input readonly value="${escapeHtml(webhookUrl)}">
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(webhookUrl)}">Copy Server URL</button>
+        </div>
+        <p class="hint">Use this same URL for bookAppointment and getAvailableSlots.</p>
+      </article>
+
+      <article class="card wide">
+        <h2>First Message</h2>
+        <textarea class="short" readonly>${escapeHtml(firstMessage)}</textarea>
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(firstMessage)}">Copy First Message</button>
+        </div>
+      </article>
+
+      <article class="card wide">
+        <h2>System Prompt</h2>
+        <textarea readonly>${escapeHtml(prompt)}</textarea>
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(prompt)}">Copy Prompt</button>
+        </div>
+      </article>
+
+      <article class="card wide">
+        <h2>Render Env Snippet</h2>
+        <textarea class="short" readonly>${escapeHtml(envSnippet)}</textarea>
+        <div class="actions">
+          <button type="button" data-copy="${escapeHtml(envSnippet)}">Copy Env Snippet</button>
+        </div>
+      </article>
+    </section>
+  </main>
+  <script>
+    document.querySelectorAll("[data-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(button.dataset.copy || "");
+        const original = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = original; }, 1200);
+      });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function renderOnboardingPage(req, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const baseUrl = requestBaseUrl(req, url);
+  const previewUrl = `/api/profile-preview${suffix}`;
+  const profileUrl = `${baseUrl}/admin/profile${suffix}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Client Onboarding</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1120px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    p { color: var(--muted); line-height: 1.45; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    label { display: block; color: var(--muted); font-size: 13px; margin: 12px 0 5px; }
+    input, textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 11px; font: 14px/1.45 Arial, sans-serif; color: var(--ink); background: #fff; }
+    textarea { min-height: 96px; resize: vertical; }
+    .mono { font-family: Consolas, monospace; min-height: 180px; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .grid { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .outputs { display: grid; gap: 14px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .status { margin: 10px 0 0; min-height: 20px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 860px) {
+      .top, .grid { display: block; }
+      .links { justify-content: start; margin-top: 14px; }
+      .card { margin-bottom: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>Client Onboarding</h1>
+        <p>Fill this out once per client. Copy the output into Render and Vapi.</p>
+      </div>
+      <nav class="links" aria-label="Setup links">
+        <a href="${escapeHtml(profileUrl)}">Current Setup</a>
+      </nav>
+    </section>
+
+    <section class="grid">
+      <form class="card" id="profile-form">
+        <h2>Client Details</h2>
+        <label>Business name</label>
+        <input name="businessName" value="${escapeHtml(profile.businessName)}">
+        <label>Assistant name</label>
+        <input name="assistantName" value="${escapeHtml(profile.assistantName)}">
+        <label>Industry</label>
+        <input name="industry" value="${escapeHtml(profile.industry)}">
+        <label>Services</label>
+        <textarea name="services">${escapeHtml(profile.services.join(", "))}</textarea>
+        <label>Service areas</label>
+        <textarea name="serviceAreas">${escapeHtml(profile.serviceAreas.join(", "))}</textarea>
+        <label>First message override</label>
+        <textarea name="greeting">${escapeHtml(profile.greeting)}</textarea>
+        <div class="actions">
+          <button type="submit">Generate</button>
+        </div>
+        <p class="status" id="status"></p>
+      </form>
+
+      <section class="outputs">
+        <article class="card">
+          <h2>First Message</h2>
+          <textarea class="mono" id="first-message" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="first-message">Copy First Message</button></div>
+        </article>
+        <article class="card">
+          <h2>Vapi Prompt</h2>
+          <textarea class="mono" id="prompt" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="prompt">Copy Prompt</button></div>
+        </article>
+        <article class="card">
+          <h2>Render Env</h2>
+          <textarea class="mono" id="env" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="env">Copy Env</button></div>
+        </article>
+      </section>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById("profile-form");
+    const status = document.getElementById("status");
+    async function generate(event) {
+      if (event) event.preventDefault();
+      status.textContent = "Generating...";
+      const payload = Object.fromEntries(new FormData(form).entries());
+      const response = await fetch("${escapeHtml(previewUrl)}", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        status.textContent = data.error || "Could not generate.";
+        return;
+      }
+      document.getElementById("first-message").value = data.firstMessage || "";
+      document.getElementById("prompt").value = data.prompt || "";
+      document.getElementById("env").value = data.envSnippet || "";
+      status.textContent = "Ready.";
+    }
+    form.addEventListener("submit", generate);
+    document.querySelectorAll("[data-copy-target]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const target = document.getElementById(button.dataset.copyTarget);
+        await navigator.clipboard.writeText(target.value || "");
+        const original = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = original; }, 1200);
+      });
+    });
+    generate();
+  </script>
+</body>
+</html>`;
+}
+
 function renderLeadsPage(leads, url) {
+  const profile = businessProfile();
   const visibleLeads = leads
     .map(publicLead)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -446,7 +891,7 @@ function renderLeadsPage(leads, url) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lead Follow-Up</title>
+  <title>${escapeHtml(profile.businessName)} Lead Follow-Up</title>
   <style>
     :root {
       color-scheme: light;
@@ -501,8 +946,8 @@ function renderLeadsPage(leads, url) {
 <body>
   <header>
     <div class="wrap">
-      <h1>Lead Follow-Up</h1>
-      <p class="sub">Call leads from Vapi and Twilio, ready for owner follow-up.</p>
+      <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1086,8 +1531,11 @@ async function createCalendarBooking(lead) {
 }
 
 async function sendOwnerNotification(lead) {
+  const profile = businessProfile();
   const message = [
-    lead.status === "booked" ? "New booked job:" : "New lead needs review:",
+    lead.status === "booked"
+      ? `New booked job for ${profile.businessName}:`
+      : `New lead needs review for ${profile.businessName}:`,
     `Name: ${lead.name || "Unknown"}`,
     `Phone: ${lead.phone || "Unknown"}`,
     `Service: ${lead.service || "Unknown"}`,
@@ -1122,7 +1570,7 @@ async function sendCustomerConfirmation(lead) {
     return { mode: "skipped", reason: "missing_phone_or_time" };
   }
 
-  const businessName = process.env.BUSINESS_NAME || "the business";
+  const businessName = businessProfile().businessName;
   const message = `Your appointment with ${businessName} is booked for ${lead.bookedTime || lead.requestedTime}. Reply here if you need to update anything.`;
 
   if (process.env.PREFER_CUSTOMER_WHATSAPP === "true" && process.env.TWILIO_WHATSAPP_FROM) {
@@ -1386,6 +1834,30 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, service: "lost-lead-booking-agent" });
     }
 
+    if (req.method === "GET" && (url.pathname === "/profile" || url.pathname === "/admin/profile")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      return html(res, 200, renderProfilePage(req, url));
+    }
+
+    if (req.method === "GET" && (url.pathname === "/onboarding" || url.pathname === "/admin/onboarding")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      return html(res, 200, renderOnboardingPage(req, url));
+    }
+
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
       if (!leadViewerKey()) {
         return html(res, 503, renderLeadViewerDisabled());
@@ -1410,6 +1882,44 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agent-context") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const profile = businessProfile();
+      return json(res, 200, {
+        ok: true,
+        profile: publicBusinessProfile(profile),
+        firstMessage: firstMessageForProfile(profile),
+        prompt: buildVapiPrompt(profile),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/profile-preview") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const profile = profileFromInput(await readJson(req));
+      return json(res, 200, {
+        ok: true,
+        profile: publicBusinessProfile(profile),
+        firstMessage: firstMessageForProfile(profile),
+        prompt: buildVapiPrompt(profile),
+        envSnippet: profileEnvSnippet(profile),
+        businessProfileJson: businessProfileJson(profile),
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/api/availability") {

@@ -23,3 +23,10 @@
 - Scheduling rule: natural appointment times are parsed in the business timezone, and requests outside business hours are saved for owner follow-up instead of treated as confirmed bookings.
 - Calendar rule: when live Google Calendar booking is enabled, the backend checks free/busy before creating the event. Busy or unconfirmed slots are saved as follow-up instead of confirmed bookings.
 - Calendar tool rule: Riley should ask the backend for available Google Calendar slots before offering exact appointment times. Google Calendar remains the source of truth; Calendly can stay optional for public booking links later.
+- Product config rule: the MVP should use a business profile instead of hardcoded industry knowledge. For now, one Render service can serve one client; later, profiles can move to a database and route by phone number.
+
+## 2026-05-28
+
+- Business-specific knowledge belongs in configuration, not code. The MVP uses one business profile per deployed Render service; multi-tenant profile routing can come later.
+- Profile setup should be copy-friendly and protected by the same lead viewer token. Editing Render env vars from the app is deferred until after the pilot proves the setup flow.
+- Client onboarding should generate prompts and env snippets without storing secrets. This keeps the MVP simple and avoids accidental config changes.
