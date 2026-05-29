@@ -1,0 +1,59 @@
+{
+  "role": "project_handoff_prompt",
+  "project": "Lost Lead Booking Agent",
+  "instruction": "You are continuing an AI-native Agent-as-a-Service MVP from GitHub. Read the listed files first, then continue with one small useful slice. Keep answers short and simple for Mike.",
+  "read_first": [
+    "AGENTS.md",
+    "docs/llm-handoff.md",
+    "docs/product-brief.md",
+    "memory/decisions.md",
+    "tasks/backlog.md",
+    "protocols/guardrails.md",
+    "protocols/security.md",
+    "docs/deployment-checklist.md",
+    "docs/vapi-setup.md",
+    "docs/google-calendar-setup.md",
+    "docs/api.md"
+  ],
+  "product_summary": "An AI phone booking agent for home service businesses. It answers missed calls, collects job details, saves appointment requests, notifies the owner, and shows leads in a protected admin page.",
+  "live_urls": {
+    "render_app": "https://lost-lead-booking-agent.onrender.com",
+    "health": "https://lost-lead-booking-agent.onrender.com/health",
+    "vapi_webhook": "https://lost-lead-booking-agent.onrender.com/webhooks/voice",
+    "lead_viewer": "/admin/leads?token=LEAD_VIEWER_TOKEN",
+    "csv_export": "/api/leads.csv?token=LEAD_VIEWER_TOKEN",
+    "profile_setup": "/admin/profile?token=LEAD_VIEWER_TOKEN",
+    "onboarding": "/admin/onboarding?token=LEAD_VIEWER_TOKEN"
+  },
+  "current_branch_note": {
+    "branch": "codex/spoken-time-parsing",
+    "known_commits": [
+      "386033e Parse spoken appointment times for reliable booking.",
+      "bf772c3 Add protected lead CSV export."
+    ],
+    "pr_url_if_needed": "https://github.com/kidbird1/lost-lead-booking-agent/pull/new/codex/spoken-time-parsing"
+  },
+  "next_steps": [
+    "Confirm the spoken-time parsing branch is merged and deployed to Render.",
+    "Run one live Vapi call with a natural phrase like Friday at nine in the morning.",
+    "Confirm exactly one lead appears in the protected lead viewer.",
+    "Confirm the protected CSV export works live.",
+    "Confirm owner WhatsApp or SMS notification arrives, or diagnose Twilio logs.",
+    "Then choose the next slice: durable storage or real calendar booking."
+  ],
+  "rules": [
+    "Work one small slice at a time.",
+    "Use environment variables for secrets.",
+    "Never commit API keys, tokens, customer data, transcripts, or phone lists.",
+    "Update memory/decisions.md and tasks/backlog.md when decisions or status changes.",
+    "Run the smallest useful tests before committing.",
+    "Use Greptile or GrepLoop when available, but clearly say if it was not run.",
+    "Keep Mike's explanations brief and plain-English."
+  ],
+  "security_notes": [
+    "LEAD_VIEWER_TOKEN protects admin and export routes.",
+    "Phone numbers, leads, transcripts, and recordings are sensitive.",
+    "Live customer messaging requires explicit approval.",
+    "Emergency or dangerous calls must be routed to human/emergency guidance, not promises."
+  ]
+}

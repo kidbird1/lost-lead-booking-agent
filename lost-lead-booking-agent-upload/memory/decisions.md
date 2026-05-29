@@ -38,3 +38,4 @@
 - Local smoke test should poll `/health` on `127.0.0.1` instead of a fixed sleep, because Windows startup timing is flaky.
 - Spoken US times like "nine in the morning" are normalized to numeric clock times before `chrono-node` parsing so bookings can schedule instead of stopping at `missing_exact_clock_time`.
 - Lead data should be exportable as a protected CSV so the owner can back up records and future agents can migrate from JSON storage to a durable database.
+- GitHub is the source of truth for project memory and saved work. ZIP exports are useful milestone backups, but continuation context should live in repo docs first.
