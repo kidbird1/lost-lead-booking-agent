@@ -1,11 +1,12 @@
 import { spawn } from "node:child_process";
 
 const port = process.env.PORT || "3000";
-const baseUrl = `http://localhost:${port}`;
+const baseUrl = `http://127.0.0.1:${port}`;
 const leadViewerToken = "smoke-token";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
+const spokenTimeCallId = `call_spoken_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
 const businessProfile = {
   businessName: "Blue Sky Plumbing",
@@ -17,6 +18,25 @@ const businessProfile = {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForHealth(timeoutMs = 10000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${baseUrl}/health`);
+      const payload = await response.json();
+      if (response.ok && payload.ok) return payload;
+      lastError = new Error(`health check returned ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await wait(150);
+  }
+
+  throw lastError || new Error("health check timed out");
 }
 
 async function post(path, body) {
@@ -56,10 +76,7 @@ const server = spawn(process.execPath, ["src/server.js"], {
 });
 
 try {
-  await wait(800);
-
-  const health = await fetch(`${baseUrl}/health`).then((res) => res.json());
-  if (!health.ok) throw new Error("health check failed");
+  await waitForHealth();
 
   const agentContext = await fetch(`${baseUrl}/api/agent-context?token=${leadViewerToken}`)
     .then((res) => res.json());
@@ -169,6 +186,11 @@ try {
     throw new Error("expected in-hours booking to create a calendar event");
   }
 
+  const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
+  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("Smoke Test")) {
+    throw new Error("expected protected CSV export to include saved leads");
+  }
+
   await post("/webhooks/voice", {
     message: {
       type: "tool-calls",
@@ -196,6 +218,38 @@ try {
   if (!afterHoursLead) throw new Error("expected after-hours lead to be saved");
   if (afterHoursLead.status !== "needs_follow_up" || afterHoursLead.scheduleReason !== "outside_business_hours") {
     throw new Error("expected after-hours lead to need follow-up");
+  }
+
+  await post("/webhooks/voice", {
+    message: {
+      type: "tool-calls",
+      call: { id: spokenTimeCallId },
+      toolCallList: [
+        {
+          id: "tool_smoke_spoken",
+          name: "bookAppointment",
+          parameters: {
+            name: "Spoken Time Test",
+            phone: "+15555550126",
+            service: "roof inspection",
+            address: "100 Main St",
+            urgency: "normal",
+            bookedTime: "Friday, nine in the morning",
+            summary: "Caller asked for Friday at nine in the morning.",
+          },
+        },
+      ],
+    },
+  });
+
+  const spokenPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const spokenLead = spokenPayload.leads.find((lead) => lead.callId === spokenTimeCallId);
+  if (!spokenLead) throw new Error("expected spoken-time lead to be saved");
+  if (spokenLead.status !== "booked" || spokenLead.scheduleStatus !== "scheduled") {
+    throw new Error(`expected spoken-time booking to schedule, got status=${spokenLead.status} schedule=${spokenLead.scheduleStatus} reason=${spokenLead.scheduleReason}`);
+  }
+  if (!spokenLead.appointmentStartIso) {
+    throw new Error("expected spoken-time booking to include appointmentStartIso");
   }
 
   await post("/webhooks/voice", {

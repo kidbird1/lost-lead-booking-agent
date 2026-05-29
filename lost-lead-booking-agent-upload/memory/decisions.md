@@ -30,3 +30,11 @@
 - Business-specific knowledge belongs in configuration, not code. The MVP uses one business profile per deployed Render service; multi-tenant profile routing can come later.
 - Profile setup should be copy-friendly and protected by the same lead viewer token. Editing Render env vars from the app is deferred until after the pilot proves the setup flow.
 - Client onboarding should generate prompts and env snippets without storing secrets. This keeps the MVP simple and avoids accidental config changes.
+
+## 2026-05-29
+
+- Handoff resume: `codex/business-profile-config` is merged to `main` via PR #6 (`41c96d9`). Render health endpoint responds OK.
+- Duplicate-lead rule stays: `bookAppointment` is primary; `end-of-call-report` only saves when no lead exists for the same Vapi `call.id`.
+- Local smoke test should poll `/health` on `127.0.0.1` instead of a fixed sleep, because Windows startup timing is flaky.
+- Spoken US times like "nine in the morning" are normalized to numeric clock times before `chrono-node` parsing so bookings can schedule instead of stopping at `missing_exact_clock_time`.
+- Lead data should be exportable as a protected CSV so the owner can back up records and future agents can migrate from JSON storage to a durable database.

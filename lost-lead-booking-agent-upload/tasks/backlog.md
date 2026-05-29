@@ -34,6 +34,7 @@
 - [x] Add reusable business profile config
 - [x] Add protected profile setup page
 - [x] Build client onboarding form
+- [x] Add protected CSV lead export
 
 ## Phase 3 - Test
 
@@ -52,6 +53,15 @@
 - [x] Confirm generated agent context uses business profile
 - [x] Confirm protected profile setup page renders
 - [x] Confirm onboarding preview generates Vapi prompt
+- [x] Confirm branch `codex/business-profile-config` merged to `main` (PR #6)
+- [x] Confirm Render `/health` responds after deploy
+- [x] Confirm local `npm run check` and `npm run smoke` on `main`
+- [ ] Confirm live `/admin/onboarding?token=...` with real `LEAD_VIEWER_TOKEN`
+- [ ] Confirm live `/admin/profile?token=...` with real `LEAD_VIEWER_TOKEN`
+- [x] Run one live Vapi test call and confirm exactly one lead in viewer
+- [x] Parse spoken times like "Friday, nine in the morning" into schedulable slots (local smoke)
+- [x] Confirm protected CSV lead export includes saved leads
+- [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends
 
