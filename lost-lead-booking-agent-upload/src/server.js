@@ -2,13 +2,14 @@ import http from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import * as chrono from "chrono-node";
 import { DateTime } from "luxon";
 
 const port = Number(process.env.PORT || 3000);
-const dataDir = new URL("../data/", import.meta.url);
-const leadsFile = new URL("../data/leads.json", import.meta.url);
-const eventsFile = new URL("../data/events.json", import.meta.url);
+const dataDir = process.env.DATA_DIR || new URL("../data/", import.meta.url);
+const leadsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "leads.json") : new URL("../data/leads.json", import.meta.url);
+const eventsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "events.json") : new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
 const defaultBusinessTimezone = "America/New_York";
 const defaultBusinessName = "Demo Home Services";
@@ -81,7 +82,7 @@ async function writeJsonFile(fileUrl, items) {
 }
 
 async function enqueueJsonWrite(fileUrl, task) {
-  const key = fileUrl.href;
+  const key = typeof fileUrl === "string" ? fileUrl : fileUrl.href;
   const previous = fileWriteQueues.get(key) || Promise.resolve();
   const next = previous.catch(() => {}).then(task);
   fileWriteQueues.set(key, next.finally(() => {
@@ -262,6 +263,14 @@ function systemStatusSnapshot(req, url) {
         label: "Business profile",
         status: readinessStatus(Boolean(profile.businessName && profile.assistantName)),
         detail: `${profile.businessName} / ${profile.assistantName}`,
+      },
+      {
+        key: "data_storage",
+        label: "Lead storage path",
+        status: envIsSet("DATA_DIR") ? "ready" : "off",
+        detail: envIsSet("DATA_DIR")
+          ? "DATA_DIR is set for an external data path."
+          : "Using the app data folder. Set DATA_DIR when adding a persistent disk.",
       },
       {
         key: "vapi_webhook",

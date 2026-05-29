@@ -27,6 +27,12 @@ Start command: npm start
 ```
 
 4. Add env vars from `.env.example`.
+   For real pilot data, mount a Render persistent disk and set:
+
+```text
+DATA_DIR=/var/data
+```
+
 5. Configure the client profile:
 
 ```text

@@ -166,3 +166,15 @@ SEND_LIVE_CALENDAR=false
 ```
 
 No real messages or calendar bookings are sent in test mode.
+
+## Storage
+
+By default, leads are saved in the app `data` folder for the MVP.
+
+For a more durable Render setup, mount a persistent disk and set:
+
+```text
+DATA_DIR=/var/data
+```
+
+The app will then store `leads.json` and `events.json` in that directory.

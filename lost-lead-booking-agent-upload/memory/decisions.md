@@ -40,3 +40,4 @@
 - Lead data should be exportable as a protected CSV so the owner can back up records and future agents can migrate from JSON storage to a durable database.
 - GitHub is the source of truth for project memory and saved work. ZIP exports are useful milestone backups, but continuation context should live in repo docs first.
 - Live pilot setup needs a protected system status page because Twilio, WhatsApp, calendar, and token issues should be visible without exposing secret values.
+- JSON storage remains the MVP default, but the data directory can be moved with `DATA_DIR` so Render can use a persistent disk before a database migration.
