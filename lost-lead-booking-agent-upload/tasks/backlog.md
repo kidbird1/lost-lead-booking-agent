@@ -34,6 +34,7 @@
 - [x] Add reusable business profile config
 - [x] Add protected profile setup page
 - [x] Build client onboarding form
+- [x] Add protected CSV lead export
 
 ## Phase 3 - Test
 
@@ -59,6 +60,7 @@
 - [ ] Confirm live `/admin/profile?token=...` with real `LEAD_VIEWER_TOKEN`
 - [x] Run one live Vapi test call and confirm exactly one lead in viewer
 - [x] Parse spoken times like "Friday, nine in the morning" into schedulable slots (local smoke)
+- [x] Confirm protected CSV lead export includes saved leads
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends

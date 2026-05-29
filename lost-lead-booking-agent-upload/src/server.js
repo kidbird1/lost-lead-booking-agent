@@ -571,6 +571,45 @@ function publicLead(lead) {
   };
 }
 
+function csvCell(value) {
+  let text = String(value ?? "");
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  if (!/[",\n\r]/.test(text)) return text;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function leadsCsv(leads) {
+  const columns = [
+    "createdAt",
+    "updatedAt",
+    "status",
+    "name",
+    "phone",
+    "service",
+    "address",
+    "urgency",
+    "requestedTime",
+    "bookedTime",
+    "scheduleStatus",
+    "scheduleReason",
+    "appointmentStartIso",
+    "appointmentEndIso",
+    "calendarStatus",
+    "calendarLink",
+    "summary",
+    "followUpNote",
+    "callId",
+    "source",
+  ];
+
+  const rows = leads
+    .map(publicLead)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .map((lead) => columns.map((column) => csvCell(lead[column])).join(","));
+
+  return `${columns.join(",")}\n${rows.join("\n")}${rows.length ? "\n" : ""}`;
+}
+
 function phoneHref(value, channel = "tel") {
   const phone = String(value || "").replace(/[^\d+]/g, "");
   if (!phone) return "";
@@ -1013,7 +1052,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1884,6 +1923,15 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function csv(res, filename, body) {
+  res.writeHead(200, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename="${filename}"`,
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
 function html(res, status, body) {
   res.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
@@ -1948,6 +1996,19 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/leads.csv") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const leads = await readJsonFile(leadsFile);
+      return csv(res, "leads.csv", leadsCsv(leads));
     }
 
     if (req.method === "GET" && url.pathname === "/api/agent-context") {

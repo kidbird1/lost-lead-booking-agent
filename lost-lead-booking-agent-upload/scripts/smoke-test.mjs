@@ -186,6 +186,11 @@ try {
     throw new Error("expected in-hours booking to create a calendar event");
   }
 
+  const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
+  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("Smoke Test")) {
+    throw new Error("expected protected CSV export to include saved leads");
+  }
+
   await post("/webhooks/voice", {
     message: {
       type: "tool-calls",

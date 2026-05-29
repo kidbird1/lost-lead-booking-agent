@@ -94,6 +94,12 @@ The JSON lead list is available at:
 GET /api/leads?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+The CSV lead export is available at:
+
+```text
+GET /api/leads.csv?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
 The generated Vapi prompt and first message are available at:
 
 ```text
