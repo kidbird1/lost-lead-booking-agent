@@ -159,6 +159,46 @@ function businessProfile() {
   };
 }
 
+function profileFromInput(input = {}) {
+  const configured = parseJsonObject(input.businessProfileJson);
+  const source = Object.keys(configured).length ? configured : input;
+  return {
+    businessName: source.businessName || defaultBusinessName,
+    assistantName: source.assistantName || defaultAssistantName,
+    industry: source.industry || "home services",
+    ownerName: source.ownerName || "",
+    services: listWithFallback(source.services, []),
+    serviceAreas: listWithFallback(source.serviceAreas, []),
+    intakeFields: listWithFallback(source.intakeFields, defaultIntakeFields),
+    neverSay: listWithFallback(source.neverSay, defaultNeverSay),
+    greeting: source.greeting || source.firstMessage || "",
+    bookingRules: {
+      afterHours: source.bookingRules?.afterHours || "Collect the details and mark the lead for follow-up.",
+      emergency: source.bookingRules?.emergency || "Tell the caller to contact emergency services if there is immediate danger, then collect details if they want to continue.",
+      ownerReview: source.bookingRules?.ownerReview || "If unclear, save the lead for owner review.",
+    },
+  };
+}
+
+function businessProfileJson(profile) {
+  return JSON.stringify(publicBusinessProfile(profile), null, 2);
+}
+
+function profileEnvSnippet(profile) {
+  return [
+    `BUSINESS_NAME=${profile.businessName}`,
+    `ASSISTANT_NAME=${profile.assistantName}`,
+    `BUSINESS_INDUSTRY=${profile.industry}`,
+    `BUSINESS_SERVICES=${profile.services.join(", ")}`,
+    `BUSINESS_SERVICE_AREAS=${profile.serviceAreas.join(", ")}`,
+    `BUSINESS_TIMEZONE=${businessTimeZone()}`,
+    `BUSINESS_HOURS_START=${process.env.BUSINESS_HOURS_START || "08:00"}`,
+    `BUSINESS_HOURS_END=${process.env.BUSINESS_HOURS_END || "18:00"}`,
+    `DEFAULT_APPOINTMENT_MINUTES=${appointmentDurationMinutes()}`,
+    `BUSINESS_PROFILE_JSON=${businessProfileJson(profile).replace(/\s+/g, " ")}`,
+  ].join("\n");
+}
+
 function publicBusinessProfile(profile = businessProfile()) {
   return {
     businessName: profile.businessName,
@@ -533,17 +573,8 @@ function renderProfilePage(req, url) {
   const webhookUrl = `${baseUrl}/webhooks/voice`;
   const agentContextUrl = `${baseUrl}/api/agent-context${suffix}`;
   const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
-  const envSnippet = [
-    `BUSINESS_NAME=${profile.businessName}`,
-    `ASSISTANT_NAME=${profile.assistantName}`,
-    `BUSINESS_INDUSTRY=${profile.industry}`,
-    `BUSINESS_SERVICES=${profile.services.join(", ")}`,
-    `BUSINESS_SERVICE_AREAS=${profile.serviceAreas.join(", ")}`,
-    `BUSINESS_TIMEZONE=${businessTimeZone()}`,
-    `BUSINESS_HOURS_START=${process.env.BUSINESS_HOURS_START || "08:00"}`,
-    `BUSINESS_HOURS_END=${process.env.BUSINESS_HOURS_END || "18:00"}`,
-    `DEFAULT_APPOINTMENT_MINUTES=${appointmentDurationMinutes()}`,
-  ].join("\n");
+  const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
+  const envSnippet = profileEnvSnippet(profile);
   const services = profile.services.length ? profile.services.join(", ") : "Not set";
   const areas = profile.serviceAreas.length ? profile.serviceAreas.join(", ") : "Not set";
 
@@ -601,6 +632,7 @@ function renderProfilePage(req, url) {
       </div>
       <nav class="links" aria-label="Setup links">
         <a href="${escapeHtml(leadsUrl)}">Lead Viewer</a>
+        <a href="${escapeHtml(onboardingUrl)}">Onboarding</a>
         <a href="${escapeHtml(agentContextUrl)}">Agent JSON</a>
       </nav>
     </section>
@@ -662,6 +694,143 @@ function renderProfilePage(req, url) {
         setTimeout(() => { button.textContent = original; }, 1200);
       });
     });
+  </script>
+</body>
+</html>`;
+}
+
+function renderOnboardingPage(req, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const baseUrl = requestBaseUrl(req, url);
+  const previewUrl = `/api/profile-preview${suffix}`;
+  const profileUrl = `${baseUrl}/admin/profile${suffix}`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Client Onboarding</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1120px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    p { color: var(--muted); line-height: 1.45; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    label { display: block; color: var(--muted); font-size: 13px; margin: 12px 0 5px; }
+    input, textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 11px; font: 14px/1.45 Arial, sans-serif; color: var(--ink); background: #fff; }
+    textarea { min-height: 96px; resize: vertical; }
+    .mono { font-family: Consolas, monospace; min-height: 180px; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .grid { display: grid; grid-template-columns: minmax(0, 420px) minmax(0, 1fr); gap: 14px; align-items: start; }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .outputs { display: grid; gap: 14px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .status { margin: 10px 0 0; min-height: 20px; color: var(--muted); font-size: 13px; }
+    @media (max-width: 860px) {
+      .top, .grid { display: block; }
+      .links { justify-content: start; margin-top: 14px; }
+      .card { margin-bottom: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>Client Onboarding</h1>
+        <p>Fill this out once per client. Copy the output into Render and Vapi.</p>
+      </div>
+      <nav class="links" aria-label="Setup links">
+        <a href="${escapeHtml(profileUrl)}">Current Setup</a>
+      </nav>
+    </section>
+
+    <section class="grid">
+      <form class="card" id="profile-form">
+        <h2>Client Details</h2>
+        <label>Business name</label>
+        <input name="businessName" value="${escapeHtml(profile.businessName)}">
+        <label>Assistant name</label>
+        <input name="assistantName" value="${escapeHtml(profile.assistantName)}">
+        <label>Industry</label>
+        <input name="industry" value="${escapeHtml(profile.industry)}">
+        <label>Services</label>
+        <textarea name="services">${escapeHtml(profile.services.join(", "))}</textarea>
+        <label>Service areas</label>
+        <textarea name="serviceAreas">${escapeHtml(profile.serviceAreas.join(", "))}</textarea>
+        <label>First message override</label>
+        <textarea name="greeting">${escapeHtml(profile.greeting)}</textarea>
+        <div class="actions">
+          <button type="submit">Generate</button>
+        </div>
+        <p class="status" id="status"></p>
+      </form>
+
+      <section class="outputs">
+        <article class="card">
+          <h2>First Message</h2>
+          <textarea class="mono" id="first-message" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="first-message">Copy First Message</button></div>
+        </article>
+        <article class="card">
+          <h2>Vapi Prompt</h2>
+          <textarea class="mono" id="prompt" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="prompt">Copy Prompt</button></div>
+        </article>
+        <article class="card">
+          <h2>Render Env</h2>
+          <textarea class="mono" id="env" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="env">Copy Env</button></div>
+        </article>
+      </section>
+    </section>
+  </main>
+  <script>
+    const form = document.getElementById("profile-form");
+    const status = document.getElementById("status");
+    async function generate(event) {
+      if (event) event.preventDefault();
+      status.textContent = "Generating...";
+      const payload = Object.fromEntries(new FormData(form).entries());
+      const response = await fetch("${escapeHtml(previewUrl)}", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        status.textContent = data.error || "Could not generate.";
+        return;
+      }
+      document.getElementById("first-message").value = data.firstMessage || "";
+      document.getElementById("prompt").value = data.prompt || "";
+      document.getElementById("env").value = data.envSnippet || "";
+      status.textContent = "Ready.";
+    }
+    form.addEventListener("submit", generate);
+    document.querySelectorAll("[data-copy-target]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const target = document.getElementById(button.dataset.copyTarget);
+        await navigator.clipboard.writeText(target.value || "");
+        const original = button.textContent;
+        button.textContent = "Copied";
+        setTimeout(() => { button.textContent = original; }, 1200);
+      });
+    });
+    generate();
   </script>
 </body>
 </html>`;
@@ -1677,6 +1846,18 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderProfilePage(req, url));
     }
 
+    if (req.method === "GET" && (url.pathname === "/onboarding" || url.pathname === "/admin/onboarding")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      return html(res, 200, renderOnboardingPage(req, url));
+    }
+
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
       if (!leadViewerKey()) {
         return html(res, 503, renderLeadViewerDisabled());
@@ -1718,6 +1899,26 @@ const server = http.createServer(async (req, res) => {
         profile: publicBusinessProfile(profile),
         firstMessage: firstMessageForProfile(profile),
         prompt: buildVapiPrompt(profile),
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/profile-preview") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const profile = profileFromInput(await readJson(req));
+      return json(res, 200, {
+        ok: true,
+        profile: publicBusinessProfile(profile),
+        firstMessage: firstMessageForProfile(profile),
+        prompt: buildVapiPrompt(profile),
+        envSnippet: profileEnvSnippet(profile),
+        businessProfileJson: businessProfileJson(profile),
       });
     }
 

@@ -76,6 +76,23 @@ try {
     throw new Error("expected protected profile setup page to render");
   }
 
+  const onboardingPage = await fetch(`${baseUrl}/admin/onboarding?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!onboardingPage.includes("Client Onboarding") || !onboardingPage.includes("Generate")) {
+    throw new Error("expected protected onboarding page to render");
+  }
+
+  const previewResult = await post(`/api/profile-preview?token=${leadViewerToken}`, {
+    businessName: "Bright Root Dental",
+    assistantName: "Riley",
+    industry: "dental office",
+    services: "cleanings, emergency dental visits",
+    serviceAreas: "33487, Boca Raton",
+  });
+  if (!previewResult.prompt.includes("Bright Root Dental") || !previewResult.envSnippet.includes("BUSINESS_NAME=Bright Root Dental")) {
+    throw new Error("expected onboarding preview to generate profile output");
+  }
+
   const availabilityResult = await post("/webhooks/voice", {
     message: {
       type: "tool-calls",

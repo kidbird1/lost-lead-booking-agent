@@ -59,6 +59,20 @@ GET /admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
 
 Shows the current business profile, Vapi first message, Vapi system prompt, tool server URL, and Render env snippet.
 
+Client onboarding form:
+
+```text
+GET /admin/onboarding?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Profile preview API:
+
+```text
+POST /api/profile-preview?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Returns generated Vapi prompt, first message, env snippet, and business profile JSON from submitted client details.
+
 Also supported for compatibility:
 
 ```text

@@ -66,6 +66,15 @@ GET /admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
 
 This page shows the profile, prompt, first message, webhook URL, and Render env snippet.
 
+For a new client, open:
+
+```text
+GET /admin/onboarding?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Fill in the client details, then copy the generated Render env and Vapi prompt.
+This does not store secrets or change Render automatically.
+
 ## Scale Rule
 
 For the MVP, use one Render service per client.

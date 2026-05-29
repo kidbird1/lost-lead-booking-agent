@@ -31,6 +31,12 @@ For an easier copy page, use:
 https://YOUR-RENDER-APP.onrender.com/admin/profile?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+For a new client, start here:
+
+```text
+https://YOUR-RENDER-APP.onrender.com/admin/onboarding?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
 ## Server URL
 
 After deploying to Render:
