@@ -303,6 +303,72 @@ function appointmentText(input = {}) {
     || "";
 }
 
+const spokenHourWords = {
+  zero: 0,
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+};
+
+function normalizeAppointmentTimeText(text = "") {
+  const hourWordPattern = Object.keys(spokenHourWords).join("|");
+  let normalized = String(text).toLowerCase();
+
+  normalized = normalized.replace(
+    new RegExp(`\\b(${hourWordPattern})\\s+in\\s+the\\s+(morning|afternoon|evening)\\b`, "gi"),
+    (_, word, part) => {
+      const hour = spokenHourWords[word.toLowerCase()];
+      const meridiem = part === "morning" ? "am" : "pm";
+      return `${hour} ${meridiem}`;
+    },
+  );
+
+  normalized = normalized.replace(/\b(at\s+)?noon\b/gi, "12 pm");
+  normalized = normalized.replace(/\b(at\s+)?midnight\b/gi, "12 am");
+  normalized = normalized.replace(/\bo['']?clock\b/gi, "");
+
+  normalized = normalized.replace(
+    new RegExp(`\\b(?:at\\s+|,\\s*)?(${hourWordPattern})\\b`, "gi"),
+    (_, word) => String(spokenHourWords[word.toLowerCase()]),
+  );
+
+  return normalized.replace(/\s+/g, " ").trim();
+}
+
+function parseAppointmentTime(text, referenceDate) {
+  const attempts = [String(text).trim(), normalizeAppointmentTimeText(text)];
+  const seen = new Set();
+
+  for (const attempt of attempts) {
+    if (!attempt || seen.has(attempt)) continue;
+    seen.add(attempt);
+
+    const result = chrono.parse(attempt, referenceDate, { forwardDate: true })[0];
+    if (!result) continue;
+
+    if (result.start.isCertain("hour")) {
+      return { result, parsedText: attempt };
+    }
+  }
+
+  const fallbackText = normalizeAppointmentTimeText(text);
+  const fallback = chrono.parse(fallbackText, referenceDate, { forwardDate: true })[0];
+  if (fallback) {
+    return { result: fallback, parsedText: fallbackText };
+  }
+
+  return { result: null, parsedText: String(text).trim() };
+}
+
 function scheduleReasonLabel(reason) {
   const labels = {
     missing_time: "No appointment time was provided.",
@@ -400,7 +466,7 @@ function buildAppointmentSchedule(input = {}) {
   }
 
   const reference = currentBusinessTime();
-  const result = chrono.parse(String(text), reference.toJSDate(), { forwardDate: true })[0];
+  const { result } = parseAppointmentTime(text, reference.toJSDate());
   if (!result) {
     return {
       scheduleStatus: "needs_follow_up",
