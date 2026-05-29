@@ -65,6 +65,14 @@ Client onboarding form:
 GET /admin/onboarding?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
+System status page:
+
+```text
+GET /admin/status?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+Shows private setup checks for Twilio, WhatsApp, calendar, lead viewer protection, and business profile config without exposing secrets.
+
 Profile preview API:
 
 ```text
@@ -104,6 +112,12 @@ The generated Vapi prompt and first message are available at:
 
 ```text
 GET /api/agent-context?token=YOUR_LEAD_VIEWER_TOKEN
+```
+
+The private setup status JSON is available at:
+
+```text
+GET /api/system-status?token=YOUR_LEAD_VIEWER_TOKEN
 ```
 
 Open appointment slots are available at:

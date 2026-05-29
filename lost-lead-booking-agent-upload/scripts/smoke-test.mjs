@@ -99,6 +99,21 @@ try {
     throw new Error("expected protected onboarding page to render");
   }
 
+  const statusPage = await fetch(`${baseUrl}/admin/status?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!statusPage.includes("System Status") || !statusPage.includes("Owner notifications")) {
+    throw new Error("expected protected system status page to render");
+  }
+
+  const systemStatus = await fetch(`${baseUrl}/api/system-status?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!systemStatus.ok || !Array.isArray(systemStatus.checks)) {
+    throw new Error("expected protected system status API to return checks");
+  }
+  if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "missing")) {
+    throw new Error("expected system status to flag missing live calendar credentials");
+  }
+
   const previewResult = await post(`/api/profile-preview?token=${leadViewerToken}`, {
     businessName: "Bright Root Dental",
     assistantName: "Riley",

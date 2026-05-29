@@ -36,6 +36,7 @@
 - [x] Build client onboarding form
 - [x] Add protected CSV lead export
 - [x] Add GitHub handoff docs for future LLM continuation
+- [x] Add protected system status page
 
 ## Phase 3 - Test
 
@@ -62,6 +63,7 @@
 - [x] Run one live Vapi test call and confirm exactly one lead in viewer
 - [x] Parse spoken times like "Friday, nine in the morning" into schedulable slots (local smoke)
 - [x] Confirm protected CSV lead export includes saved leads
+- [x] Confirm protected system status page renders
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends

@@ -213,6 +213,106 @@ function publicBusinessProfile(profile = businessProfile()) {
   };
 }
 
+function envIsTrue(name) {
+  return process.env[name] === "true";
+}
+
+function envIsSet(name) {
+  return Boolean(String(process.env[name] || "").trim());
+}
+
+function readinessStatus(ready, off = false) {
+  if (ready) return "ready";
+  return off ? "off" : "missing";
+}
+
+function systemStatusSnapshot(req, url) {
+  const profile = businessProfile();
+  const messagingLive = envIsTrue("SEND_LIVE_MESSAGES");
+  const calendarLive = envIsTrue("SEND_LIVE_CALENDAR");
+  const twilioCoreReady = envIsSet("TWILIO_ACCOUNT_SID") && envIsSet("TWILIO_AUTH_TOKEN");
+  const smsReady = twilioCoreReady && envIsSet("TWILIO_PHONE_NUMBER");
+  const whatsappReady = twilioCoreReady && envIsSet("TWILIO_WHATSAPP_FROM");
+  const ownerReady = envIsSet("OWNER_WHATSAPP_NUMBER") || envIsSet("OWNER_PHONE_NUMBER");
+  const googleReady = envIsSet("GOOGLE_CLIENT_ID")
+    && envIsSet("GOOGLE_CLIENT_SECRET")
+    && envIsSet("GOOGLE_REFRESH_TOKEN")
+    && envIsSet("GOOGLE_CALENDAR_ID");
+  const { start, end } = businessHours();
+
+  return {
+    ok: true,
+    service: "lost-lead-booking-agent",
+    baseUrl: requestBaseUrl(req, url),
+    profile: publicBusinessProfile(profile),
+    businessTimezone: businessTimeZone(),
+    businessHours: {
+      start: `${String(Math.floor(start / 60)).padStart(2, "0")}:${String(start % 60).padStart(2, "0")}`,
+      end: `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}`,
+    },
+    checks: [
+      {
+        key: "lead_viewer",
+        label: "Lead viewer protection",
+        status: readinessStatus(envIsSet("LEAD_VIEWER_TOKEN") || envIsSet("LEADS_VIEW_KEY")),
+        detail: "Admin pages require a private token.",
+      },
+      {
+        key: "business_profile",
+        label: "Business profile",
+        status: readinessStatus(Boolean(profile.businessName && profile.assistantName)),
+        detail: `${profile.businessName} / ${profile.assistantName}`,
+      },
+      {
+        key: "vapi_webhook",
+        label: "Vapi webhook",
+        status: "ready",
+        detail: `${requestBaseUrl(req, url)}/webhooks/voice`,
+      },
+      {
+        key: "twilio_credentials",
+        label: "Twilio credentials",
+        status: readinessStatus(twilioCoreReady),
+        detail: "Account SID and auth token must be in Render env.",
+      },
+      {
+        key: "owner_notification",
+        label: "Owner notifications",
+        status: readinessStatus(messagingLive && ownerReady && (smsReady || whatsappReady), !messagingLive),
+        detail: messagingLive
+          ? "Requires owner phone/WhatsApp and a Twilio sender."
+          : "SEND_LIVE_MESSAGES is off.",
+      },
+      {
+        key: "sms_sender",
+        label: "SMS sender",
+        status: readinessStatus(smsReady, !messagingLive),
+        detail: "Requires TWILIO_PHONE_NUMBER.",
+      },
+      {
+        key: "whatsapp_sender",
+        label: "WhatsApp sender",
+        status: readinessStatus(whatsappReady, !messagingLive),
+        detail: "Requires TWILIO_WHATSAPP_FROM. Sandbox users must stay joined.",
+      },
+      {
+        key: "calendar_booking",
+        label: "Calendar booking",
+        status: readinessStatus(calendarLive && googleReady, !calendarLive),
+        detail: calendarLive
+          ? "Requires Google Calendar OAuth env vars."
+          : "SEND_LIVE_CALENDAR is off.",
+      },
+      {
+        key: "calendar_availability",
+        label: "Calendar availability check",
+        status: process.env.CHECK_CALENDAR_AVAILABILITY === "false" ? "off" : readinessStatus(calendarLive && googleReady, !calendarLive),
+        detail: "Checks whether requested slots are free before booking.",
+      },
+    ],
+  };
+}
+
 function firstMessageForProfile(profile = businessProfile()) {
   return profile.greeting
     || `Thanks for calling ${profile.businessName}. This is ${profile.assistantName}. What can I help you with today?`;
@@ -669,6 +769,91 @@ function renderUnauthorizedLeadViewer() {
 </html>`;
 }
 
+function renderSystemStatusPage(req, url) {
+  const snapshot = systemStatusSnapshot(req, url);
+  const suffix = leadViewerUrlSuffix(url);
+  const statusClass = (status) => `state state-${escapeHtml(status)}`;
+  const rows = snapshot.checks.map((check) => `<article class="check">
+    <div>
+      <h2>${escapeHtml(check.label)}</h2>
+      <p>${escapeHtml(check.detail)}</p>
+    </div>
+    <span class="${statusClass(check.status)}">${escapeHtml(check.status)}</span>
+  </article>`).join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(snapshot.profile.businessName)} System Status</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+      --green: #2f6f4e;
+      --gold: #8a6b1f;
+      --red: #a13f3f;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 960px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0; font-size: 18px; }
+    p { margin: 8px 0 0; color: var(--muted); line-height: 1.45; }
+    a { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); text-decoration: none; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
+    .meta div, .check { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
+    .meta strong { display: block; font-size: 14px; margin-bottom: 6px; }
+    .meta span { color: var(--muted); overflow-wrap: anywhere; }
+    .checks { display: grid; gap: 10px; }
+    .check { display: flex; justify-content: space-between; align-items: start; gap: 16px; }
+    .state { display: inline-flex; min-height: 28px; align-items: center; border-radius: 999px; padding: 4px 10px; font-size: 13px; text-transform: capitalize; white-space: nowrap; background: #eceff3; color: #26303d; }
+    .state-ready { background: #e0f0e7; color: var(--green); }
+    .state-off { background: #f4ead0; color: var(--gold); }
+    .state-missing { background: #f6e1df; color: var(--red); }
+    @media (max-width: 760px) {
+      .top, .check { display: block; }
+      .links { justify-content: start; margin-top: 14px; }
+      .meta { grid-template-columns: 1fr; }
+      .state { margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>${escapeHtml(snapshot.profile.businessName)} System Status</h1>
+        <p>Private setup checks for the live booking agent.</p>
+      </div>
+      <nav class="links" aria-label="Admin links">
+        <a href="/admin/leads${escapeHtml(suffix)}">Leads</a>
+        <a href="/admin/profile${escapeHtml(suffix)}">Setup</a>
+        <a href="/api/system-status${escapeHtml(suffix)}">JSON</a>
+      </nav>
+    </section>
+
+    <section class="meta" aria-label="Runtime details">
+      <div><strong>Timezone</strong><span>${escapeHtml(snapshot.businessTimezone)}</span></div>
+      <div><strong>Business Hours</strong><span>${escapeHtml(snapshot.businessHours.start)} to ${escapeHtml(snapshot.businessHours.end)}</span></div>
+      <div><strong>Base URL</strong><span>${escapeHtml(snapshot.baseUrl)}</span></div>
+    </section>
+
+    <section class="checks" aria-label="System checks">
+      ${rows}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 function renderProfilePage(req, url) {
   const profile = businessProfile();
   const suffix = leadViewerUrlSuffix(url);
@@ -679,6 +864,7 @@ function renderProfilePage(req, url) {
   const agentContextUrl = `${baseUrl}/api/agent-context${suffix}`;
   const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
   const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
+  const statusUrl = `${baseUrl}/admin/status${suffix}`;
   const envSnippet = profileEnvSnippet(profile);
   const services = profile.services.length ? profile.services.join(", ") : "Not set";
   const areas = profile.serviceAreas.length ? profile.serviceAreas.join(", ") : "Not set";
@@ -738,6 +924,7 @@ function renderProfilePage(req, url) {
       <nav class="links" aria-label="Setup links">
         <a href="${escapeHtml(leadsUrl)}">Lead Viewer</a>
         <a href="${escapeHtml(onboardingUrl)}">Onboarding</a>
+        <a href="${escapeHtml(statusUrl)}">System Status</a>
         <a href="${escapeHtml(agentContextUrl)}">Agent JSON</a>
       </nav>
     </section>
@@ -810,6 +997,7 @@ function renderOnboardingPage(req, url) {
   const baseUrl = requestBaseUrl(req, url);
   const previewUrl = `/api/profile-preview${suffix}`;
   const profileUrl = `${baseUrl}/admin/profile${suffix}`;
+  const statusUrl = `${baseUrl}/admin/status${suffix}`;
 
   return `<!doctype html>
 <html lang="en">
@@ -860,6 +1048,7 @@ function renderOnboardingPage(req, url) {
       </div>
       <nav class="links" aria-label="Setup links">
         <a href="${escapeHtml(profileUrl)}">Current Setup</a>
+        <a href="${escapeHtml(statusUrl)}">System Status</a>
       </nav>
     </section>
 
@@ -1052,7 +1241,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1972,6 +2161,18 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderOnboardingPage(req, url));
     }
 
+    if (req.method === "GET" && (url.pathname === "/status" || url.pathname === "/admin/status")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      return html(res, 200, renderSystemStatusPage(req, url));
+    }
+
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
       if (!leadViewerKey()) {
         return html(res, 503, renderLeadViewerDisabled());
@@ -2027,6 +2228,18 @@ const server = http.createServer(async (req, res) => {
         firstMessage: firstMessageForProfile(profile),
         prompt: buildVapiPrompt(profile),
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/system-status") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      return json(res, 200, systemStatusSnapshot(req, url));
     }
 
     if (req.method === "POST" && url.pathname === "/api/profile-preview") {
