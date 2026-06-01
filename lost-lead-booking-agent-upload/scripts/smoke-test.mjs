@@ -7,6 +7,7 @@ const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
 const spokenTimeCallId = `call_spoken_time_${Date.now()}`;
+const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
 const businessProfile = {
   businessName: "Blue Sky Plumbing",
@@ -110,8 +111,11 @@ try {
   if (!systemStatus.ok || !Array.isArray(systemStatus.checks)) {
     throw new Error("expected protected system status API to return checks");
   }
-  if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "missing")) {
-    throw new Error("expected system status to flag missing live calendar credentials");
+  if (!systemStatus.ready) {
+    throw new Error("expected system status to be ready in mock live mode");
+  }
+  if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "ready")) {
+    throw new Error("expected system status to show calendar booking ready in mock live mode");
   }
 
   const previewResult = await post(`/api/profile-preview?token=${leadViewerToken}`, {
@@ -265,6 +269,35 @@ try {
   }
   if (!spokenLead.appointmentStartIso) {
     throw new Error("expected spoken-time booking to include appointmentStartIso");
+  }
+
+  await post("/webhooks/voice", {
+    message: {
+      type: "tool-calls",
+      call: { id: vagueTimeCallId },
+      toolCallList: [
+        {
+          id: "tool_smoke_vague",
+          name: "bookAppointment",
+          parameters: {
+            name: "Vague Time Test",
+            phone: "+15555550127",
+            service: "roof inspection",
+            address: "101 Main St",
+            urgency: "normal",
+            bookedTime: "Friday morning",
+            summary: "Caller asked for Friday morning without an exact time.",
+          },
+        },
+      ],
+    },
+  });
+
+  const vaguePayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const vagueLead = vaguePayload.leads.find((lead) => lead.callId === vagueTimeCallId);
+  if (!vagueLead) throw new Error("expected vague-time lead to be saved");
+  if (vagueLead.status !== "needs_follow_up" || vagueLead.scheduleReason !== "missing_exact_clock_time") {
+    throw new Error(`expected vague-time booking to need exact-time follow-up, got status=${vagueLead.status} reason=${vagueLead.scheduleReason}`);
   }
 
   await post("/webhooks/voice", {

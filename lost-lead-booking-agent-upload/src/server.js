@@ -235,7 +235,7 @@ function systemStatusSnapshot(req, url) {
   const smsReady = twilioCoreReady && envIsSet("TWILIO_PHONE_NUMBER");
   const whatsappReady = twilioCoreReady && envIsSet("TWILIO_WHATSAPP_FROM");
   const ownerReady = envIsSet("OWNER_WHATSAPP_NUMBER") || envIsSet("OWNER_PHONE_NUMBER");
-  const googleReady = envIsSet("GOOGLE_CLIENT_ID")
+  const googleReady = googleCalendarMockEnabled() || envIsSet("GOOGLE_CLIENT_ID")
     && envIsSet("GOOGLE_CLIENT_SECRET")
     && envIsSet("GOOGLE_REFRESH_TOKEN")
     && envIsSet("GOOGLE_CALENDAR_ID");
@@ -244,6 +244,10 @@ function systemStatusSnapshot(req, url) {
   return {
     ok: true,
     service: "lost-lead-booking-agent",
+    ready: Boolean(leadViewerKey())
+      && Boolean(profile.businessName && profile.assistantName)
+      && (!messagingLive || (ownerReady && (smsReady || whatsappReady)))
+      && (!calendarLive || googleReady),
     baseUrl: requestBaseUrl(req, url),
     profile: publicBusinessProfile(profile),
     businessTimezone: businessTimeZone(),
@@ -483,6 +487,7 @@ function scheduleReasonLabel(reason) {
     missing_time: "No appointment time was provided.",
     unclear_time: "The requested time needs owner review.",
     missing_exact_clock_time: "The request needs an exact appointment time.",
+    missing_iso_booking_times: "Calendar booking needs an exact start and end time.",
     invalid_datetime: "The appointment time could not be read.",
     outside_business_hours: "Requested time is outside business hours.",
     inside_business_hours: "Appointment time is inside business hours.",
@@ -1739,6 +1744,7 @@ async function getAvailableSlots(input = {}) {
 }
 
 function calendarFollowUpReason(calendar) {
+  if (calendar.error === "missing_iso_booking_times") return "missing_iso_booking_times";
   if (calendar.error === "calendar_slot_unavailable") return "calendar_slot_unavailable";
   if (calendar.error === "google_event_create_failed") return "calendar_event_create_failed";
   return "calendar_check_failed";
