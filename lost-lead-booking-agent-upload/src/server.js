@@ -312,6 +312,14 @@ function systemStatusSnapshot(req, url) {
         detail: `${requestBaseUrl(req, url)}/webhooks/voice`,
       },
       {
+        key: "webhook_auth",
+        label: "Webhook protection",
+        status: envIsSet("WEBHOOK_SHARED_SECRET") || envIsSet("VOICE_WEBHOOK_SECRET") ? "ready" : "off",
+        detail: envIsSet("WEBHOOK_SHARED_SECRET") || envIsSet("VOICE_WEBHOOK_SECRET")
+          ? "Voice webhooks require the configured secret."
+          : "Optional. Set WEBHOOK_SHARED_SECRET to protect Vapi and fallback webhooks.",
+      },
+      {
         key: "voice_fallback",
         label: "Twilio voice fallback",
         status: "ready",
@@ -664,6 +672,10 @@ function leadViewerKey() {
   return process.env.LEAD_VIEWER_TOKEN || process.env.LEADS_VIEW_KEY || "";
 }
 
+function webhookSharedSecret() {
+  return process.env.WEBHOOK_SHARED_SECRET || process.env.VOICE_WEBHOOK_SECRET || "";
+}
+
 function leadViewerUrlSuffix(url) {
   const token = url.searchParams.get("token");
   const key = url.searchParams.get("key");
@@ -679,6 +691,23 @@ function isLeadViewerAuthorized(req, url) {
   const requestKey = url.searchParams.get("token") || url.searchParams.get("key");
   const auth = req.headers.authorization || "";
   return requestKey === configuredKey || auth === `Bearer ${configuredKey}`;
+}
+
+function isWebhookAuthorized(req, url) {
+  const configuredSecret = webhookSharedSecret();
+  if (!configuredSecret) return true;
+
+  const requestSecret = url.searchParams.get("webhook_secret") || url.searchParams.get("secret");
+  const headerSecret = req.headers["x-webhook-secret"];
+  const auth = req.headers.authorization || "";
+  return requestSecret === configuredSecret
+    || headerSecret === configuredSecret
+    || auth === `Bearer ${configuredSecret}`;
+}
+
+function webhookUrlSuffix(url) {
+  const secret = url.searchParams.get("webhook_secret") || url.searchParams.get("secret");
+  return secret ? `?webhook_secret=${encodeURIComponent(secret)}` : "";
 }
 
 function requestBaseUrl(req, url) {
@@ -2535,7 +2564,7 @@ function twiml(res, body) {
 function renderVoiceFallbackTwiml(req, url) {
   const profile = businessProfile();
   const baseUrl = requestBaseUrl(req, url);
-  const recordingUrl = `${baseUrl}/webhooks/twilio/recording`;
+  const recordingUrl = `${baseUrl}/webhooks/twilio/recording${webhookUrlSuffix(url)}`;
   const message = [
     `Thanks for calling ${profile.businessName}.`,
     "Our booking assistant is unavailable for a moment.",
@@ -2879,10 +2908,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if ((req.method === "GET" || req.method === "POST") && url.pathname === "/webhooks/twilio/voice-fallback") {
+      if (!isWebhookAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+
       return twiml(res, renderVoiceFallbackTwiml(req, url));
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/twilio/recording") {
+      if (!isWebhookAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+
       await handleTwilioRecording(await readFormOrJson(req));
       return twiml(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -2892,6 +2929,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/voice") {
+      if (!isWebhookAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+
       const body = await readJson(req);
       const result = await handleVapiWebhook(body);
       return json(res, 200, result);

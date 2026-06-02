@@ -46,3 +46,4 @@
 
 - Multi-client preparation should stay light for MVP: add `BUSINESS_ID` metadata to profiles, leads, events, and exports, but do not build full multi-tenant routing until one-client pilots prove the flow.
 - Lead review should support one-click inspection: each protected lead card links to a protected detail page with raw intake, owner alert status, calendar status, and resend-owner notification action.
+- Webhook protection should be optional for the pilot. If `WEBHOOK_SHARED_SECRET` or `VOICE_WEBHOOK_SECRET` is set, Vapi and Twilio fallback webhooks require the configured secret; if unset, existing live calls keep working.

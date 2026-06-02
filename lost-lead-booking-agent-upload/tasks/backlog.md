@@ -40,6 +40,7 @@
 - [x] Add configurable data directory for persistent storage
 - [x] Add lightweight business ID metadata for future multi-client routing
 - [x] Add protected single-lead detail page
+- [x] Add optional webhook secret protection
 
 ## Phase 3 - Test
 

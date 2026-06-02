@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 const port = process.env.PORT || "3000";
 const baseUrl = `http://127.0.0.1:${port}`;
 const leadViewerToken = "smoke-token";
+const webhookSecret = "smoke-webhook-secret";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
@@ -68,12 +69,17 @@ async function postForm(path, body) {
   return payload;
 }
 
+function webhookPath(path) {
+  return `${path}?webhook_secret=${encodeURIComponent(webhookSecret)}`;
+}
+
 const server = spawn(process.execPath, ["src/server.js"], {
   env: {
     ...process.env,
     PORT: port,
     NODE_ENV: "test",
     LEAD_VIEWER_TOKEN: leadViewerToken,
+    WEBHOOK_SHARED_SECRET: webhookSecret,
     SEND_LIVE_MESSAGES: "false",
     SEND_LIVE_CALENDAR: "true",
     CHECK_CALENDAR_AVAILABILITY: "true",
@@ -153,12 +159,21 @@ try {
     throw new Error("expected onboarding preview to generate profile output");
   }
 
-  const fallbackTwiml = await fetch(`${baseUrl}/webhooks/twilio/voice-fallback`).then((res) => res.text());
-  if (!fallbackTwiml.includes("<Record") || !fallbackTwiml.includes("/webhooks/twilio/recording")) {
+  const blockedWebhook = await fetch(`${baseUrl}/webhooks/voice`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: { type: "tool-calls", toolCallList: [] } }),
+  });
+  if (blockedWebhook.status !== 401) {
+    throw new Error("expected webhook secret to protect voice webhook");
+  }
+
+  const fallbackTwiml = await fetch(`${baseUrl}${webhookPath("/webhooks/twilio/voice-fallback")}`).then((res) => res.text());
+  if (!fallbackTwiml.includes("<Record") || !fallbackTwiml.includes("/webhooks/twilio/recording") || !fallbackTwiml.includes("webhook_secret=")) {
     throw new Error("expected Twilio fallback endpoint to return recording TwiML");
   }
 
-  await postForm("/webhooks/twilio/recording", {
+  await postForm(webhookPath("/webhooks/twilio/recording"), {
     CallSid: fallbackCallId,
     From: "+15555550128",
     TranscriptionText: "My name is Backup Caller. I need leak repair at ZIP 33487 tomorrow at 10 AM.",
@@ -176,7 +191,7 @@ try {
     throw new Error("expected fallback lead to record owner notification status");
   }
 
-  const availabilityResult = await post("/webhooks/voice", {
+  const availabilityResult = await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: availabilityCallId },
@@ -205,7 +220,7 @@ try {
     throw new Error("expected available slots from protected availability API");
   }
 
-  const toolResult = await post("/webhooks/voice", {
+  const toolResult = await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: callId },
@@ -231,7 +246,7 @@ try {
     throw new Error("tool call result missing");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "end-of-call-report",
       call: { id: callId },
@@ -307,7 +322,7 @@ try {
     throw new Error("expected protected backup export to include profile and saved leads");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: afterHoursCallId },
@@ -336,7 +351,7 @@ try {
     throw new Error("expected after-hours lead to need follow-up");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: spokenTimeCallId },
@@ -368,7 +383,7 @@ try {
     throw new Error("expected spoken-time booking to include appointmentStartIso");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: vagueTimeCallId },
@@ -397,7 +412,7 @@ try {
     throw new Error(`expected vague-time booking to need exact-time follow-up, got status=${vagueLead.status} reason=${vagueLead.scheduleReason}`);
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: busySlotCallId },
