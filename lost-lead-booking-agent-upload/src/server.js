@@ -154,9 +154,20 @@ function listWithFallback(value, fallback = []) {
   return list.length ? list : fallback;
 }
 
+function slugFromValue(value = "") {
+  const slug = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "default-business";
+}
+
 function businessProfile() {
   const configured = parseJsonObject(process.env.BUSINESS_PROFILE_JSON);
+  const businessName = configured.businessName || process.env.BUSINESS_NAME || defaultBusinessName;
   return {
+    businessId: configured.businessId || process.env.BUSINESS_ID || slugFromValue(businessName),
     businessName: configured.businessName || process.env.BUSINESS_NAME || defaultBusinessName,
     assistantName: configured.assistantName || process.env.ASSISTANT_NAME || defaultAssistantName,
     industry: configured.industry || process.env.BUSINESS_INDUSTRY || "home services",
@@ -177,8 +188,10 @@ function businessProfile() {
 function profileFromInput(input = {}) {
   const configured = parseJsonObject(input.businessProfileJson);
   const source = Object.keys(configured).length ? configured : input;
+  const businessName = source.businessName || defaultBusinessName;
   return {
-    businessName: source.businessName || defaultBusinessName,
+    businessId: source.businessId || slugFromValue(businessName),
+    businessName,
     assistantName: source.assistantName || defaultAssistantName,
     industry: source.industry || "home services",
     ownerName: source.ownerName || "",
@@ -201,6 +214,7 @@ function businessProfileJson(profile) {
 
 function profileEnvSnippet(profile) {
   return [
+    `BUSINESS_ID=${profile.businessId || slugFromValue(profile.businessName)}`,
     `BUSINESS_NAME=${profile.businessName}`,
     `ASSISTANT_NAME=${profile.assistantName}`,
     `BUSINESS_INDUSTRY=${profile.industry}`,
@@ -216,6 +230,7 @@ function profileEnvSnippet(profile) {
 
 function publicBusinessProfile(profile = businessProfile()) {
   return {
+    businessId: profile.businessId || slugFromValue(profile.businessName),
     businessName: profile.businessName,
     assistantName: profile.assistantName,
     industry: profile.industry,
@@ -241,6 +256,42 @@ function readinessStatus(ready, off = false) {
   return off ? "off" : "missing";
 }
 
+function pilotReadinessSummary(checks) {
+  const blockers = checks.filter((check) => check.status === "missing");
+  const optional = checks.filter((check) => check.status === "off");
+
+  if (blockers.length) {
+    return {
+      status: "needs_setup",
+      label: "Needs setup before pilot",
+      summary: `${blockers.length} required setup item${blockers.length === 1 ? "" : "s"} need attention before live testing.`,
+      nextActions: blockers.map((check) => `${check.label}: ${check.detail}`),
+      blockers,
+      optional,
+    };
+  }
+
+  if (optional.length) {
+    return {
+      status: "ready_with_notes",
+      label: "Ready with optional items off",
+      summary: "The core booking flow can run. Some optional safety or delivery features are turned off.",
+      nextActions: optional.slice(0, 4).map((check) => `${check.label}: ${check.detail}`),
+      blockers,
+      optional,
+    };
+  }
+
+  return {
+    status: "ready",
+    label: "Ready for pilot",
+    summary: "Core booking, lead capture, owner alerts, and calendar checks are ready.",
+    nextActions: ["Run one live Vapi call and confirm the lead, owner alert, and calendar result."],
+    blockers,
+    optional,
+  };
+}
+
 function systemStatusSnapshot(req, url) {
   const profile = businessProfile();
   const messagingLive = envIsTrue("SEND_LIVE_MESSAGES");
@@ -255,7 +306,7 @@ function systemStatusSnapshot(req, url) {
     && envIsSet("GOOGLE_CALENDAR_ID");
   const { start, end } = businessHours();
 
-  return {
+  const snapshot = {
     ok: true,
     service: "lost-lead-booking-agent",
     ready: Boolean(leadViewerKey())
@@ -295,6 +346,14 @@ function systemStatusSnapshot(req, url) {
         label: "Vapi webhook",
         status: "ready",
         detail: `${requestBaseUrl(req, url)}/webhooks/voice`,
+      },
+      {
+        key: "webhook_auth",
+        label: "Webhook protection",
+        status: envIsSet("WEBHOOK_SHARED_SECRET") || envIsSet("VOICE_WEBHOOK_SECRET") ? "ready" : "off",
+        detail: envIsSet("WEBHOOK_SHARED_SECRET") || envIsSet("VOICE_WEBHOOK_SECRET")
+          ? "Voice webhooks require the configured secret."
+          : "Optional. Set WEBHOOK_SHARED_SECRET to protect Vapi and fallback webhooks.",
       },
       {
         key: "voice_fallback",
@@ -344,6 +403,8 @@ function systemStatusSnapshot(req, url) {
       },
     ],
   };
+  snapshot.pilotReadiness = pilotReadinessSummary(snapshot.checks);
+  return snapshot;
 }
 
 function firstMessageForProfile(profile = businessProfile()) {
@@ -649,6 +710,10 @@ function leadViewerKey() {
   return process.env.LEAD_VIEWER_TOKEN || process.env.LEADS_VIEW_KEY || "";
 }
 
+function webhookSharedSecret() {
+  return process.env.WEBHOOK_SHARED_SECRET || process.env.VOICE_WEBHOOK_SECRET || "";
+}
+
 function leadViewerUrlSuffix(url) {
   const token = url.searchParams.get("token");
   const key = url.searchParams.get("key");
@@ -666,6 +731,23 @@ function isLeadViewerAuthorized(req, url) {
   return requestKey === configuredKey || auth === `Bearer ${configuredKey}`;
 }
 
+function isWebhookAuthorized(req, url) {
+  const configuredSecret = webhookSharedSecret();
+  if (!configuredSecret) return true;
+
+  const requestSecret = url.searchParams.get("webhook_secret") || url.searchParams.get("secret");
+  const headerSecret = req.headers["x-webhook-secret"];
+  const auth = req.headers.authorization || "";
+  return requestSecret === configuredSecret
+    || headerSecret === configuredSecret
+    || auth === `Bearer ${configuredSecret}`;
+}
+
+function webhookUrlSuffix(url) {
+  const secret = url.searchParams.get("webhook_secret") || url.searchParams.get("secret");
+  return secret ? `?webhook_secret=${encodeURIComponent(secret)}` : "";
+}
+
 function requestBaseUrl(req, url) {
   const protocol = String(req.headers["x-forwarded-proto"] || url.protocol.replace(":", "") || "http")
     .split(",")[0]
@@ -679,6 +761,7 @@ function requestBaseUrl(req, url) {
 function publicLead(lead) {
   return {
     id: lead.id,
+    businessId: lead.businessId || "",
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt || "",
     callId: lead.callId || "",
@@ -706,12 +789,14 @@ function publicLead(lead) {
     ownerNotificationError: lead.ownerNotificationError || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
+    followUpHistory: Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [],
   };
 }
 
 function publicEvent(event) {
   return {
     id: event.id || "",
+    businessId: event.businessId || event.raw?.businessId || "",
     createdAt: event.createdAt || "",
     provider: event.provider || "",
     type: event.type || "",
@@ -725,7 +810,9 @@ function publicEvent(event) {
 }
 
 function csvCell(value) {
-  let text = String(value ?? "");
+  let text = typeof value === "object" && value !== null
+    ? JSON.stringify(value)
+    : String(value ?? "");
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   if (!/[",\n\r]/.test(text)) return text;
   return `"${text.replaceAll('"', '""')}"`;
@@ -733,6 +820,7 @@ function csvCell(value) {
 
 function leadsCsv(leads) {
   const columns = [
+    "businessId",
     "createdAt",
     "updatedAt",
     "status",
@@ -755,6 +843,7 @@ function leadsCsv(leads) {
     "ownerNotificationError",
     "summary",
     "followUpNote",
+    "followUpHistory",
     "callId",
     "source",
   ];
@@ -779,6 +868,12 @@ function statusLabel(status) {
   return String(status || "new").replaceAll("_", " ");
 }
 
+function detailRows(items) {
+  return items
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "Unknown")}</dd></div>`)
+    .join("");
+}
+
 function ownerNotificationLabel(lead) {
   if (!lead.ownerNotificationMode) return "";
   if (lead.ownerNotificationMode === "live") {
@@ -790,6 +885,22 @@ function ownerNotificationLabel(lead) {
   if (lead.ownerNotificationMode === "skipped") return `Owner alert: skipped${lead.ownerNotificationError ? ` (${lead.ownerNotificationError})` : ""}`;
   if (lead.ownerNotificationMode === "error") return `Owner alert error: ${lead.ownerNotificationError || "check Twilio settings"}`;
   return `Owner alert: ${lead.ownerNotificationMode}`;
+}
+
+function latestFollowUpHistory(lead) {
+  const history = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+  return history
+    .filter((item) => item && (item.note || item.status))
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+}
+
+function renderFollowUpHistory(lead, limit = 5) {
+  const items = latestFollowUpHistory(lead).slice(0, limit);
+  if (!items.length) return "";
+
+  return `<div class="history">
+    ${items.map((item) => `<p><strong>${escapeHtml(statusLabel(item.status))}</strong> ${escapeHtml(formatDate(item.at))}${item.note ? ` - ${escapeHtml(item.note)}` : ""}</p>`).join("")}
+  </div>`;
 }
 
 function renderLeadViewerDisabled() {
@@ -839,10 +950,48 @@ function renderUnauthorizedLeadViewer() {
 </html>`;
 }
 
+function renderNotFoundLeadViewer() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lead Not Found</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f7f5f0; color: #181818; }
+    main { max-width: 520px; margin: 12vh auto; padding: 24px; }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { color: #4b5563; line-height: 1.5; }
+    a { color: #181818; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lead Not Found</h1>
+    <p>This lead may have been moved, deleted, or created in another environment.</p>
+  </main>
+</body>
+</html>`;
+}
+
 function renderSystemStatusPage(req, url) {
   const snapshot = systemStatusSnapshot(req, url);
   const suffix = leadViewerUrlSuffix(url);
   const statusClass = (status) => `state state-${escapeHtml(status)}`;
+  const readiness = snapshot.pilotReadiness;
+  const readinessStatus = readiness.status === "needs_setup"
+    ? "missing"
+    : readiness.status === "ready"
+      ? "ready"
+      : "off";
+  const nextActions = readiness.nextActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+  const pilotSteps = [
+    "Confirm Render has the needed env vars and the latest deploy is live.",
+    "Confirm Vapi has the booking tool URL set to /webhooks/voice.",
+    "Make one test call with a real appointment time inside business hours.",
+    "Check that exactly one lead appears in the lead viewer.",
+    "Check the owner alert and Google Calendar result.",
+  ].map((step) => `<li>${escapeHtml(step)}</li>`).join("");
   const rows = snapshot.checks.map((check) => `<article class="check">
     <div>
       <h2>${escapeHtml(check.label)}</h2>
@@ -878,6 +1027,11 @@ function renderSystemStatusPage(req, url) {
     a { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); text-decoration: none; }
     .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
     .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .readiness { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; margin: 0 0 20px; }
+    .readiness-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+    .readiness ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); line-height: 1.45; }
+    .pilot-steps { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; margin: 0 0 20px; }
+    .pilot-steps ol { margin: 8px 0 0; padding-left: 22px; color: var(--muted); line-height: 1.5; }
     .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
     .meta div, .check { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
     .meta strong { display: block; font-size: 14px; margin-bottom: 6px; }
@@ -889,7 +1043,7 @@ function renderSystemStatusPage(req, url) {
     .state-off { background: #f4ead0; color: var(--gold); }
     .state-missing { background: #f6e1df; color: var(--red); }
     @media (max-width: 760px) {
-      .top, .check { display: block; }
+      .top, .check, .readiness-head { display: block; }
       .links { justify-content: start; margin-top: 14px; }
       .meta { grid-template-columns: 1fr; }
       .state { margin-top: 12px; }
@@ -910,7 +1064,29 @@ function renderSystemStatusPage(req, url) {
       </nav>
     </section>
 
+    <section class="readiness" aria-label="Pilot readiness">
+      <div class="readiness-head">
+        <div>
+          <h2>Pilot Readiness</h2>
+          <p><strong>${escapeHtml(readiness.label)}</strong></p>
+          <p>${escapeHtml(readiness.summary)}</p>
+        </div>
+        <span class="${statusClass(readinessStatus)}">${escapeHtml(readiness.status.replaceAll("_", " "))}</span>
+      </div>
+      <ul>
+        ${nextActions}
+      </ul>
+    </section>
+
+    <section class="pilot-steps" aria-label="Live pilot checklist">
+      <h2>Live Pilot Checklist</h2>
+      <ol>
+        ${pilotSteps}
+      </ol>
+    </section>
+
     <section class="meta" aria-label="Runtime details">
+      <div><strong>Client ID</strong><span>${escapeHtml(snapshot.profile.businessId)}</span></div>
       <div><strong>Timezone</strong><span>${escapeHtml(snapshot.businessTimezone)}</span></div>
       <div><strong>Business Hours</strong><span>${escapeHtml(snapshot.businessHours.start)} to ${escapeHtml(snapshot.businessHours.end)}</span></div>
       <div><strong>Base URL</strong><span>${escapeHtml(snapshot.baseUrl)}</span></div>
@@ -1004,6 +1180,7 @@ function renderProfilePage(req, url) {
         <h2>Client Profile</h2>
         <dl>
           <div><dt>Business</dt><dd>${escapeHtml(profile.businessName)}</dd></div>
+          <div><dt>Client ID</dt><dd>${escapeHtml(profile.businessId)}</dd></div>
           <div><dt>Assistant</dt><dd>${escapeHtml(profile.assistantName)}</dd></div>
           <div><dt>Industry</dt><dd>${escapeHtml(profile.industry)}</dd></div>
           <div><dt>Timezone</dt><dd>${escapeHtml(businessTimeZone())}</dd></div>
@@ -1230,6 +1407,7 @@ function renderLeadsPage(leads, url) {
         <span class="status status-${escapeHtml(lead.status)}">${escapeHtml(statusLabel(lead.status))}</span>
       </div>
       <dl>
+        <div><dt>Client</dt><dd>${escapeHtml(lead.businessId || profile.businessId)}</dd></div>
         <div><dt>Phone</dt><dd>${escapeHtml(lead.phone || "Unknown")}</dd></div>
         <div><dt>Address</dt><dd>${escapeHtml(lead.address || "Unknown")}</dd></div>
         <div><dt>Urgency</dt><dd>${escapeHtml(lead.urgency || "Unknown")}</dd></div>
@@ -1239,7 +1417,9 @@ function renderLeadsPage(leads, url) {
       ${lead.scheduleNote && lead.scheduleStatus !== "scheduled" ? `<p class="note">${escapeHtml(lead.scheduleNote)}</p>` : ""}
       ${ownerAlert ? `<p class="note">${escapeHtml(ownerAlert)}</p>` : ""}
       ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
+      ${renderFollowUpHistory(lead, 2)}
       <div class="actions">
+        <a href="/admin/leads/${encodeURIComponent(lead.id)}${escapeHtml(suffix)}">Details</a>
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
         ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
         ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
@@ -1300,6 +1480,8 @@ function renderLeadsPage(leads, url) {
     dd { margin: 0; overflow-wrap: anywhere; }
     .summary, .note { margin: 12px 0 0; line-height: 1.45; color: #323842; }
     .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); }
+    .history { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; color: var(--muted); font-size: 13px; }
+    .history p { margin: 4px 0; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
     .empty { border: 1px dashed var(--line); border-radius: 8px; padding: 36px; text-align: center; color: var(--muted); background: #fff; }
     @media (max-width: 760px) {
@@ -1314,7 +1496,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a> <a href="/api/backup.json${escapeHtml(suffix)}">Backup JSON</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1383,6 +1565,161 @@ function renderLeadsPage(leads, url) {
 </html>`;
 }
 
+function renderLeadDetailPage(lead, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const publicItem = publicLead(lead);
+  const time = publicItem.bookedTime || publicItem.requestedTime || "Needs follow-up";
+  const call = phoneHref(publicItem.phone, "tel");
+  const sms = phoneHref(publicItem.phone, "sms");
+  const whatsapp = phoneHref(publicItem.phone, "whatsapp");
+  const ownerAlert = ownerNotificationLabel(publicItem);
+  const raw = JSON.stringify(lead.raw || {}, null, 2);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(publicItem.name || "Lead")} - ${escapeHtml(profile.businessName)}</title>
+  <style>
+    :root { color-scheme: light; --ink: #171717; --muted: #5f6673; --paper: #fbfaf6; --line: #ddd8cb; --green: #2f6f4e; --blue: #245c88; --red: #a13f3f; --gold: #8a6b1f; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1000px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
+    .links, .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .sub { color: var(--muted); margin: 8px 0 0; }
+    .status { display: inline-flex; min-height: 28px; align-items: center; border-radius: 999px; padding: 4px 10px; font-size: 13px; text-transform: capitalize; background: #eceff3; color: #26303d; }
+    .status-booked { background: #e0f0e7; color: var(--green); }
+    .status-contacted { background: #e3edf6; color: var(--blue); }
+    .status-needs_follow_up, .status-new, .status-needs_review { background: #f4ead0; color: var(--gold); }
+    .status-lost { background: #f6e1df; color: var(--red); }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 18px; margin-top: 12px; }
+    dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 0; }
+    dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); line-height: 1.45; }
+    .history { display: grid; gap: 8px; color: var(--muted); }
+    .history p { margin: 0; line-height: 1.45; }
+    .groups { display: grid; gap: 12px; margin-top: 16px; }
+    .group-label { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f0e7; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 13px; }
+    @media (max-width: 760px) {
+      .top { display: block; }
+      .links { margin-top: 14px; }
+      dl { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>${escapeHtml(publicItem.name || "Unknown caller")}</h1>
+        <p class="sub">${escapeHtml(publicItem.service || "Service request")} · ${escapeHtml(formatDate(publicItem.createdAt))}</p>
+      </div>
+      <nav class="links" aria-label="Lead links">
+        <a href="/admin/leads${escapeHtml(suffix)}">Back to leads</a>
+        <a href="/admin/events${escapeHtml(suffix)}">Events</a>
+      </nav>
+    </section>
+
+    <section class="card">
+      <h2>Lead Details <span class="status status-${escapeHtml(publicItem.status)}">${escapeHtml(statusLabel(publicItem.status))}</span></h2>
+      <dl>${detailRows([
+        ["Client", publicItem.businessId || profile.businessId],
+        ["Phone", publicItem.phone],
+        ["Address", publicItem.address],
+        ["Urgency", publicItem.urgency],
+        ["Requested time", time],
+        ["Call ID", publicItem.callId],
+        ["Source", publicItem.source],
+        ["Calendar", publicItem.calendarStatus || publicItem.scheduleStatus],
+        ["Owner alert", ownerAlert],
+      ])}</dl>
+      <div class="groups">
+        <div>
+          <p class="group-label">Contact</p>
+          <div class="actions">
+            ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
+            ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
+            ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
+            ${publicItem.calendarLink ? `<a href="${escapeHtml(publicItem.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
+            <button type="button" id="notify-owner">Notify owner</button>
+          </div>
+        </div>
+        <div>
+          <p class="group-label">Lead status</p>
+          <div class="actions">
+            <button type="button" data-action="needs_follow_up">Follow up</button>
+            <button type="button" data-action="contacted">Contacted</button>
+            <button type="button" data-action="booked">Booked</button>
+            <button type="button" data-action="lost">Lost</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    ${(publicItem.summary || publicItem.scheduleNote || publicItem.followUpNote) ? `<section class="card">
+      <h2>Notes</h2>
+      ${publicItem.summary ? `<p>${escapeHtml(publicItem.summary)}</p>` : ""}
+      ${publicItem.scheduleNote ? `<p class="note">${escapeHtml(publicItem.scheduleNote)}</p>` : ""}
+      ${publicItem.followUpNote ? `<p class="note">${escapeHtml(publicItem.followUpNote)}</p>` : ""}
+    </section>` : ""}
+
+    ${latestFollowUpHistory(publicItem).length ? `<section class="card">
+      <h2>Follow-Up History</h2>
+      ${renderFollowUpHistory(publicItem, 20)}
+    </section>` : ""}
+
+    <section class="card">
+      <h2>Raw Intake</h2>
+      <pre>${escapeHtml(raw)}</pre>
+    </section>
+  </main>
+  <script>
+    const suffix = window.location.search || "";
+    const button = document.getElementById("notify-owner");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Sending...";
+      const response = await fetch("/leads/notify-owner" + suffix, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: ${JSON.stringify(publicItem.id)} }),
+      });
+      if (response.ok) location.reload();
+      else {
+        button.disabled = false;
+        button.textContent = "Notify owner";
+        alert("Could not notify owner.");
+      }
+    });
+    document.querySelectorAll("[data-action]").forEach((actionButton) => {
+      actionButton.addEventListener("click", async () => {
+        const note = prompt("Add a follow-up note", "");
+        actionButton.disabled = true;
+        const response = await fetch("/leads/status" + suffix, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: ${JSON.stringify(publicItem.id)}, status: actionButton.dataset.action, note }),
+        });
+        if (response.ok) location.reload();
+        else {
+          actionButton.disabled = false;
+          alert("Could not update lead.");
+        }
+      });
+    });
+  </script>
+</body>
+</html>`;
+}
+
 function renderEventsPage(events, url) {
   const profile = businessProfile();
   const suffix = leadViewerUrlSuffix(url);
@@ -1392,6 +1729,7 @@ function renderEventsPage(events, url) {
     .slice(0, 100)
     .map((event) => `<tr>
       <td>${escapeHtml(formatDate(event.createdAt))}</td>
+      <td>${escapeHtml(event.businessId || profile.businessId)}</td>
       <td>${escapeHtml(event.provider || "Unknown")}</td>
       <td>${escapeHtml(event.type || "Unknown")}</td>
       <td>${escapeHtml(event.callId || "")}</td>
@@ -1436,7 +1774,7 @@ function renderEventsPage(events, url) {
   </header>
   <main class="wrap">
     ${rows ? `<table>
-      <thead><tr><th>Time</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
+      <thead><tr><th>Time</th><th>Client</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>` : `<div class="empty">No events saved yet.</div>`}
   </main>
@@ -1455,10 +1793,19 @@ async function updateLeadStatus({ id, status, note }) {
     const index = leads.findIndex((lead) => lead.id === id);
     if (index === -1) return { ok: false, error: "lead_not_found" };
 
+    const trimmedNote = String(note || "").trim();
+    const history = Array.isArray(leads[index].followUpHistory) ? leads[index].followUpHistory : [];
+    const historyItem = {
+      at: new Date().toISOString(),
+      status,
+      note: trimmedNote,
+    };
+
     leads[index] = {
       ...leads[index],
       status,
-      followUpNote: note || leads[index].followUpNote || "",
+      followUpNote: trimmedNote || leads[index].followUpNote || "",
+      followUpHistory: [historyItem, ...history].slice(0, 50),
       updatedAt: new Date().toISOString(),
     };
 
@@ -1477,6 +1824,21 @@ async function notifyOwnerForLead(id) {
     ok: notification.mode !== "error",
     notification,
     lead: publicLead(updatedLead || lead),
+  };
+}
+
+async function buildProtectedBackup() {
+  const [leads, events] = await Promise.all([
+    readJsonFile(leadsFile),
+    readJsonFile(eventsFile),
+  ]);
+
+  return {
+    ok: true,
+    exportedAt: new Date().toISOString(),
+    profile: publicBusinessProfile(businessProfile()),
+    leads: leads.map(publicLead),
+    events: events.map(publicEvent),
   };
 }
 
@@ -1499,7 +1861,9 @@ async function updateStoredLead(id, updates) {
 
 function normalizeLead(input = {}) {
   const parameters = input.parameters || input.arguments || input;
+  const profile = businessProfile();
   return {
+    businessId: parameters.businessId || input.businessId || profile.businessId,
     callId: parameters.callId || input.callId || input.call?.id || "",
     status: parameters.status || input.status || "new",
     source: input.source || "voice",
@@ -1550,8 +1914,10 @@ async function findLeadById(id) {
 }
 
 async function saveLead(input) {
+  const profile = businessProfile();
   const lead = {
     id: randomUUID(),
+    businessId: input.businessId || profile.businessId,
     createdAt: new Date().toISOString(),
     callId: input.callId || "",
     status: input.status || "new",
@@ -1583,8 +1949,10 @@ async function saveLead(input) {
 }
 
 async function saveEvent(input) {
+  const profile = businessProfile();
   return appendJson(eventsFile, {
     id: randomUUID(),
+    businessId: input.businessId || profile.businessId,
     createdAt: new Date().toISOString(),
     ...input,
   });
@@ -2313,7 +2681,7 @@ function twiml(res, body) {
 function renderVoiceFallbackTwiml(req, url) {
   const profile = businessProfile();
   const baseUrl = requestBaseUrl(req, url);
-  const recordingUrl = `${baseUrl}/webhooks/twilio/recording`;
+  const recordingUrl = `${baseUrl}/webhooks/twilio/recording${webhookUrlSuffix(url)}`;
   const message = [
     `Thanks for calling ${profile.businessName}.`,
     "Our booking assistant is unavailable for a moment.",
@@ -2435,6 +2803,22 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderLeadsPage(leads, url));
     }
 
+    if (req.method === "GET" && url.pathname.startsWith("/admin/leads/")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      const id = decodeURIComponent(url.pathname.replace("/admin/leads/", ""));
+      const lead = await findLeadById(id);
+      if (!lead) return html(res, 404, renderNotFoundLeadViewer());
+
+      return html(res, 200, renderLeadDetailPage(lead, url));
+    }
+
     if (req.method === "GET" && (url.pathname === "/events" || url.pathname === "/admin/events")) {
       if (!leadViewerKey()) {
         return html(res, 503, renderLeadViewerDisabled());
@@ -2461,6 +2845,22 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
     }
 
+    if (req.method === "GET" && url.pathname.startsWith("/api/leads/")) {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const id = decodeURIComponent(url.pathname.replace("/api/leads/", ""));
+      const lead = await findLeadById(id);
+      if (!lead) return json(res, 404, { ok: false, error: "lead_not_found" });
+
+      return json(res, 200, { ok: true, lead: publicLead(lead) });
+    }
+
     if (req.method === "GET" && url.pathname === "/api/events") {
       if (!leadViewerKey()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
@@ -2478,6 +2878,18 @@ const server = http.createServer(async (req, res) => {
           .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
           .slice(0, 100),
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/backup.json") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      return json(res, 200, await buildProtectedBackup());
     }
 
     if (req.method === "GET" && url.pathname === "/api/leads.csv") {
@@ -2613,10 +3025,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     if ((req.method === "GET" || req.method === "POST") && url.pathname === "/webhooks/twilio/voice-fallback") {
+      if (!isWebhookAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+
       return twiml(res, renderVoiceFallbackTwiml(req, url));
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/twilio/recording") {
+      if (!isWebhookAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+
       await handleTwilioRecording(await readFormOrJson(req));
       return twiml(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -2626,6 +3046,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/voice") {
+      if (!isWebhookAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+
       const body = await readJson(req);
       const result = await handleVapiWebhook(body);
       return json(res, 200, result);

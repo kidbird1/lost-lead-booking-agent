@@ -41,3 +41,11 @@
 - GitHub is the source of truth for project memory and saved work. ZIP exports are useful milestone backups, but continuation context should live in repo docs first.
 - Live pilot setup needs a protected system status page because Twilio, WhatsApp, calendar, and token issues should be visible without exposing secret values.
 - JSON storage remains the MVP default, but the data directory can be moved with `DATA_DIR` so Render can use a persistent disk before a database migration.
+
+## 2026-06-02
+
+- Multi-client preparation should stay light for MVP: add `BUSINESS_ID` metadata to profiles, leads, events, and exports, but do not build full multi-tenant routing until one-client pilots prove the flow.
+- Lead review should support one-click inspection: each protected lead card links to a protected detail page with raw intake, owner alert status, calendar status, and resend-owner notification action.
+- Webhook protection should be optional for the pilot. If `WEBHOOK_SHARED_SECRET` or `VOICE_WEBHOOK_SECRET` is set, Vapi and Twilio fallback webhooks require the configured secret; if unset, existing live calls keep working.
+- Owner follow-up actions should leave a short status history on each lead so the business can see contacted/booked/lost changes over time instead of only the latest note.
+- The protected system status page should show a plain-English pilot readiness summary, including blockers, optional warnings, and next actions, so setup gaps are visible without reading JSON.

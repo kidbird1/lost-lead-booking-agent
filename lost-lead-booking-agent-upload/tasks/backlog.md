@@ -38,6 +38,11 @@
 - [x] Add GitHub handoff docs for future LLM continuation
 - [x] Add protected system status page
 - [x] Add configurable data directory for persistent storage
+- [x] Add lightweight business ID metadata for future multi-client routing
+- [x] Add protected single-lead detail page
+- [x] Add optional webhook secret protection
+- [x] Add owner follow-up history on leads
+- [x] Add pilot readiness summary to system status
 
 ## Phase 3 - Test
 
@@ -65,6 +70,7 @@
 - [x] Parse spoken times like "Friday, nine in the morning" into schedulable slots (local smoke)
 - [x] Confirm protected CSV lead export includes saved leads
 - [x] Confirm protected system status page renders
+- [x] Confirm protected single-lead detail page and API render saved lead context
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends

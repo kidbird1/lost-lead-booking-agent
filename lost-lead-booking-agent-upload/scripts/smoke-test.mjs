@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 const port = process.env.PORT || "3000";
 const baseUrl = `http://127.0.0.1:${port}`;
 const leadViewerToken = "smoke-token";
+const webhookSecret = "smoke-webhook-secret";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
@@ -11,6 +12,7 @@ const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
 const fallbackCallId = `call_fallback_${Date.now()}`;
 const businessProfile = {
+  businessId: "blue-sky-plumbing",
   businessName: "Blue Sky Plumbing",
   assistantName: "Riley",
   industry: "plumbing",
@@ -67,12 +69,17 @@ async function postForm(path, body) {
   return payload;
 }
 
+function webhookPath(path) {
+  return `${path}?webhook_secret=${encodeURIComponent(webhookSecret)}`;
+}
+
 const server = spawn(process.execPath, ["src/server.js"], {
   env: {
     ...process.env,
     PORT: port,
     NODE_ENV: "test",
     LEAD_VIEWER_TOKEN: leadViewerToken,
+    WEBHOOK_SHARED_SECRET: webhookSecret,
     SEND_LIVE_MESSAGES: "false",
     SEND_LIVE_CALENDAR: "true",
     CHECK_CALENDAR_AVAILABILITY: "true",
@@ -98,6 +105,9 @@ try {
   if (!agentContext.ok || agentContext.profile.businessName !== businessProfile.businessName) {
     throw new Error("expected agent context to use business profile");
   }
+  if (agentContext.profile.businessId !== businessProfile.businessId) {
+    throw new Error("expected agent context to expose business ID");
+  }
   if (!agentContext.prompt.includes("Blue Sky Plumbing") || !agentContext.firstMessage.includes("Blue Sky Plumbing")) {
     throw new Error("expected generated prompt and first message to use business profile");
   }
@@ -116,7 +126,10 @@ try {
 
   const statusPage = await fetch(`${baseUrl}/admin/status?token=${leadViewerToken}`)
     .then((res) => res.text());
-  if (!statusPage.includes("System Status") || !statusPage.includes("Owner notifications")) {
+  if (!statusPage.includes("System Status")
+    || !statusPage.includes("Owner notifications")
+    || !statusPage.includes("Pilot Readiness")
+    || !statusPage.includes("Live Pilot Checklist")) {
     throw new Error("expected protected system status page to render");
   }
 
@@ -125,8 +138,14 @@ try {
   if (!systemStatus.ok || !Array.isArray(systemStatus.checks)) {
     throw new Error("expected protected system status API to return checks");
   }
+  if (!systemStatus.pilotReadiness || !Array.isArray(systemStatus.pilotReadiness.nextActions)) {
+    throw new Error("expected protected system status API to return pilot readiness");
+  }
   if (!systemStatus.ready) {
     throw new Error("expected system status to be ready in mock live mode");
+  }
+  if (systemStatus.profile.businessId !== businessProfile.businessId) {
+    throw new Error("expected system status to expose business ID");
   }
   if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "ready")) {
     throw new Error("expected system status to show calendar booking ready in mock live mode");
@@ -146,12 +165,21 @@ try {
     throw new Error("expected onboarding preview to generate profile output");
   }
 
-  const fallbackTwiml = await fetch(`${baseUrl}/webhooks/twilio/voice-fallback`).then((res) => res.text());
-  if (!fallbackTwiml.includes("<Record") || !fallbackTwiml.includes("/webhooks/twilio/recording")) {
+  const blockedWebhook = await fetch(`${baseUrl}/webhooks/voice`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: { type: "tool-calls", toolCallList: [] } }),
+  });
+  if (blockedWebhook.status !== 401) {
+    throw new Error("expected webhook secret to protect voice webhook");
+  }
+
+  const fallbackTwiml = await fetch(`${baseUrl}${webhookPath("/webhooks/twilio/voice-fallback")}`).then((res) => res.text());
+  if (!fallbackTwiml.includes("<Record") || !fallbackTwiml.includes("/webhooks/twilio/recording") || !fallbackTwiml.includes("webhook_secret=")) {
     throw new Error("expected Twilio fallback endpoint to return recording TwiML");
   }
 
-  await postForm("/webhooks/twilio/recording", {
+  await postForm(webhookPath("/webhooks/twilio/recording"), {
     CallSid: fallbackCallId,
     From: "+15555550128",
     TranscriptionText: "My name is Backup Caller. I need leak repair at ZIP 33487 tomorrow at 10 AM.",
@@ -162,11 +190,14 @@ try {
   if (!fallbackLead || fallbackLead.status !== "needs_follow_up" || fallbackLead.source !== "twilio_voice_fallback") {
     throw new Error("expected Twilio fallback recording to save a follow-up lead");
   }
+  if (fallbackLead.businessId !== businessProfile.businessId) {
+    throw new Error("expected fallback lead to include business ID");
+  }
   if (fallbackLead.ownerNotificationMode !== "test") {
     throw new Error("expected fallback lead to record owner notification status");
   }
 
-  const availabilityResult = await post("/webhooks/voice", {
+  const availabilityResult = await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: availabilityCallId },
@@ -195,7 +226,7 @@ try {
     throw new Error("expected available slots from protected availability API");
   }
 
-  const toolResult = await post("/webhooks/voice", {
+  const toolResult = await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: callId },
@@ -221,7 +252,7 @@ try {
     throw new Error("tool call result missing");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "end-of-call-report",
       call: { id: callId },
@@ -238,6 +269,9 @@ try {
   if (matchingLeads[0].status !== "booked" || matchingLeads[0].scheduleStatus !== "scheduled") {
     throw new Error("expected in-hours booking to be scheduled");
   }
+  if (matchingLeads[0].businessId !== businessProfile.businessId) {
+    throw new Error("expected booking lead to include business ID");
+  }
   if (matchingLeads[0].calendarStatus !== "live" || !matchingLeads[0].calendarLink) {
     throw new Error("expected in-hours booking to create a calendar event");
   }
@@ -245,11 +279,41 @@ try {
     throw new Error("expected booking lead to record owner notification status");
   }
 
+  const leadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test") || !leadDetailPage.includes("Lead status")) {
+    throw new Error("expected protected lead detail page to render saved lead context");
+  }
+
+  const leadDetailApi = await fetch(`${baseUrl}/api/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!leadDetailApi.ok || leadDetailApi.lead.id !== matchingLeads[0].id || leadDetailApi.lead.businessId !== businessProfile.businessId) {
+    throw new Error("expected protected lead detail API to return saved lead");
+  }
+
   const notifyAgainResult = await post(`/leads/notify-owner?token=${leadViewerToken}`, {
     id: matchingLeads[0].id,
   });
   if (!notifyAgainResult.ok || notifyAgainResult.notification?.mode !== "test") {
     throw new Error("expected protected owner notification resend to work in test mode");
+  }
+
+  const detailStatusResult = await post(`/leads/status?token=${leadViewerToken}`, {
+    id: matchingLeads[0].id,
+    status: "contacted",
+    note: "Owner called from detail page.",
+  });
+  if (!detailStatusResult.ok || detailStatusResult.lead.status !== "contacted") {
+    throw new Error("expected protected detail status action to update lead");
+  }
+  if (!Array.isArray(detailStatusResult.lead.followUpHistory) || !detailStatusResult.lead.followUpHistory.some((item) => item.note === "Owner called from detail page.")) {
+    throw new Error("expected protected detail status action to save follow-up history");
+  }
+
+  const updatedLeadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!updatedLeadDetailPage.includes("Follow-Up History") || !updatedLeadDetailPage.includes("Owner called from detail page.")) {
+    throw new Error("expected protected lead detail page to show follow-up history");
   }
 
   const eventsPage = await fetch(`${baseUrl}/admin/events?token=${leadViewerToken}`).then((res) => res.text());
@@ -263,11 +327,17 @@ try {
   }
 
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
-  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
+  if (!leadsCsv.includes("businessId,createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("followUpHistory") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");
   }
 
-  await post("/webhooks/voice", {
+  const backupPayload = await fetch(`${baseUrl}/api/backup.json?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!backupPayload.ok || backupPayload.profile.businessId !== businessProfile.businessId || !backupPayload.leads.some((lead) => lead.name === "Smoke Test")) {
+    throw new Error("expected protected backup export to include profile and saved leads");
+  }
+
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: afterHoursCallId },
@@ -296,7 +366,7 @@ try {
     throw new Error("expected after-hours lead to need follow-up");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: spokenTimeCallId },
@@ -328,7 +398,7 @@ try {
     throw new Error("expected spoken-time booking to include appointmentStartIso");
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: vagueTimeCallId },
@@ -357,7 +427,7 @@ try {
     throw new Error(`expected vague-time booking to need exact-time follow-up, got status=${vagueLead.status} reason=${vagueLead.scheduleReason}`);
   }
 
-  await post("/webhooks/voice", {
+  await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
       call: { id: busySlotCallId },
