@@ -45,3 +45,4 @@
 ## 2026-06-02
 
 - Multi-client preparation should stay light for MVP: add `BUSINESS_ID` metadata to profiles, leads, events, and exports, but do not build full multi-tenant routing until one-client pilots prove the flow.
+- Lead review should support one-click inspection: each protected lead card links to a protected detail page with raw intake, owner alert status, calendar status, and resend-owner notification action.
