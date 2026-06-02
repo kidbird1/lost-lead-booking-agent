@@ -245,6 +245,13 @@ try {
     throw new Error("expected booking lead to record owner notification status");
   }
 
+  const notifyAgainResult = await post(`/leads/notify-owner?token=${leadViewerToken}`, {
+    id: matchingLeads[0].id,
+  });
+  if (!notifyAgainResult.ok || notifyAgainResult.notification?.mode !== "test") {
+    throw new Error("expected protected owner notification resend to work in test mode");
+  }
+
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
   if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");

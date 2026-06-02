@@ -1229,6 +1229,7 @@ function renderLeadsPage(leads, url) {
         ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
         ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
         ${lead.calendarLink ? `<a href="${escapeHtml(lead.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
+        <button type="button" data-notify-owner>Notify owner</button>
         <button type="button" data-action="needs_follow_up">Follow up</button>
         <button type="button" data-action="contacted">Contacted</button>
         <button type="button" data-action="booked">Booked</button>
@@ -1344,6 +1345,24 @@ function renderLeadsPage(leads, url) {
         else alert("Could not update lead.");
       });
     });
+    document.querySelectorAll("[data-notify-owner]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const lead = button.closest(".lead");
+        button.disabled = true;
+        button.textContent = "Sending...";
+        const response = await fetch("/leads/notify-owner" + suffix, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: lead.dataset.id }),
+        });
+        if (response.ok) location.reload();
+        else {
+          button.disabled = false;
+          button.textContent = "Notify owner";
+          alert("Could not notify owner.");
+        }
+      });
+    });
   </script>
 </body>
 </html>`;
@@ -1370,6 +1389,19 @@ async function updateLeadStatus({ id, status, note }) {
     await writeJsonFile(leadsFile, leads);
     return { ok: true, lead: publicLead(leads[index]) };
   });
+}
+
+async function notifyOwnerForLead(id) {
+  const lead = await findLeadById(id);
+  if (!lead) return { ok: false, error: "lead_not_found" };
+
+  const notification = await sendOwnerNotification(lead);
+  const updatedLead = await recordOwnerNotification(lead, notification);
+  return {
+    ok: notification.mode !== "error",
+    notification,
+    lead: publicLead(updatedLead || lead),
+  };
 }
 
 async function updateStoredLead(id, updates) {
@@ -1433,6 +1465,12 @@ async function findLeadByCallId(callId) {
   if (!callId) return null;
   const leads = await readJsonFile(leadsFile);
   return leads.find((lead) => lead.callId === callId) || null;
+}
+
+async function findLeadById(id) {
+  if (!id) return null;
+  const leads = await readJsonFile(leadsFile);
+  return leads.find((lead) => lead.id === id) || null;
 }
 
 async function saveLead(input) {
@@ -2435,6 +2473,20 @@ const server = http.createServer(async (req, res) => {
 
       const body = await readJson(req);
       const result = await updateLeadStatus(body);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
+    if (req.method === "POST" && url.pathname === "/leads/notify-owner") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const body = await readJson(req);
+      const result = await notifyOwnerForLead(body.id);
       return json(res, result.ok ? 200 : 400, result);
     }
 
