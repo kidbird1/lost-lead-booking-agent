@@ -258,6 +258,18 @@ try {
     throw new Error("expected booking lead to record owner notification status");
   }
 
+  const leadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test")) {
+    throw new Error("expected protected lead detail page to render saved lead context");
+  }
+
+  const leadDetailApi = await fetch(`${baseUrl}/api/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!leadDetailApi.ok || leadDetailApi.lead.id !== matchingLeads[0].id || leadDetailApi.lead.businessId !== businessProfile.businessId) {
+    throw new Error("expected protected lead detail API to return saved lead");
+  }
+
   const notifyAgainResult = await post(`/leads/notify-owner?token=${leadViewerToken}`, {
     id: matchingLeads[0].id,
   });

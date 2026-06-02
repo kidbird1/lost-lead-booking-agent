@@ -797,6 +797,12 @@ function statusLabel(status) {
   return String(status || "new").replaceAll("_", " ");
 }
 
+function detailRows(items) {
+  return items
+    .map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "Unknown")}</dd></div>`)
+    .join("");
+}
+
 function ownerNotificationLabel(lead) {
   if (!lead.ownerNotificationMode) return "";
   if (lead.ownerNotificationMode === "live") {
@@ -852,6 +858,30 @@ function renderUnauthorizedLeadViewer() {
   <main>
     <h1>Unauthorized</h1>
     <p>Use the private lead viewer link from Render.</p>
+  </main>
+</body>
+</html>`;
+}
+
+function renderNotFoundLeadViewer() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lead Not Found</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f7f5f0; color: #181818; }
+    main { max-width: 520px; margin: 12vh auto; padding: 24px; }
+    h1 { margin: 0 0 10px; font-size: 28px; }
+    p { color: #4b5563; line-height: 1.5; }
+    a { color: #181818; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lead Not Found</h1>
+    <p>This lead may have been moved, deleted, or created in another environment.</p>
   </main>
 </body>
 </html>`;
@@ -1261,6 +1291,7 @@ function renderLeadsPage(leads, url) {
       ${ownerAlert ? `<p class="note">${escapeHtml(ownerAlert)}</p>` : ""}
       ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
       <div class="actions">
+        <a href="/admin/leads/${encodeURIComponent(lead.id)}${escapeHtml(suffix)}">Details</a>
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
         ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
         ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
@@ -1398,6 +1429,122 @@ function renderLeadsPage(leads, url) {
           alert("Could not notify owner.");
         }
       });
+    });
+  </script>
+</body>
+</html>`;
+}
+
+function renderLeadDetailPage(lead, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const publicItem = publicLead(lead);
+  const time = publicItem.bookedTime || publicItem.requestedTime || "Needs follow-up";
+  const call = phoneHref(publicItem.phone, "tel");
+  const sms = phoneHref(publicItem.phone, "sms");
+  const whatsapp = phoneHref(publicItem.phone, "whatsapp");
+  const ownerAlert = ownerNotificationLabel(publicItem);
+  const raw = JSON.stringify(lead.raw || {}, null, 2);
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(publicItem.name || "Lead")} - ${escapeHtml(profile.businessName)}</title>
+  <style>
+    :root { color-scheme: light; --ink: #171717; --muted: #5f6673; --paper: #fbfaf6; --line: #ddd8cb; --green: #2f6f4e; --blue: #245c88; --red: #a13f3f; --gold: #8a6b1f; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1000px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); font: inherit; text-decoration: none; cursor: pointer; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
+    .links, .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .sub { color: var(--muted); margin: 8px 0 0; }
+    .status { display: inline-flex; min-height: 28px; align-items: center; border-radius: 999px; padding: 4px 10px; font-size: 13px; text-transform: capitalize; background: #eceff3; color: #26303d; }
+    .status-booked { background: #e0f0e7; color: var(--green); }
+    .status-contacted { background: #e3edf6; color: var(--blue); }
+    .status-needs_follow_up, .status-new, .status-needs_review { background: #f4ead0; color: var(--gold); }
+    .status-lost { background: #f6e1df; color: var(--red); }
+    .card { border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 18px; margin-top: 12px; }
+    dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 0; }
+    dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); line-height: 1.45; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f0e7; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 13px; }
+    @media (max-width: 760px) {
+      .top { display: block; }
+      .links { margin-top: 14px; }
+      dl { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>${escapeHtml(publicItem.name || "Unknown caller")}</h1>
+        <p class="sub">${escapeHtml(publicItem.service || "Service request")} · ${escapeHtml(formatDate(publicItem.createdAt))}</p>
+      </div>
+      <nav class="links" aria-label="Lead links">
+        <a href="/admin/leads${escapeHtml(suffix)}">Back to leads</a>
+        <a href="/admin/events${escapeHtml(suffix)}">Events</a>
+      </nav>
+    </section>
+
+    <section class="card">
+      <h2>Lead Details <span class="status status-${escapeHtml(publicItem.status)}">${escapeHtml(statusLabel(publicItem.status))}</span></h2>
+      <dl>${detailRows([
+        ["Client", publicItem.businessId || profile.businessId],
+        ["Phone", publicItem.phone],
+        ["Address", publicItem.address],
+        ["Urgency", publicItem.urgency],
+        ["Requested time", time],
+        ["Call ID", publicItem.callId],
+        ["Source", publicItem.source],
+        ["Calendar", publicItem.calendarStatus || publicItem.scheduleStatus],
+        ["Owner alert", ownerAlert],
+      ])}</dl>
+      <div class="actions" style="margin-top: 16px;">
+        ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
+        ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
+        ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
+        ${publicItem.calendarLink ? `<a href="${escapeHtml(publicItem.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
+        <button type="button" id="notify-owner">Notify owner</button>
+      </div>
+    </section>
+
+    ${(publicItem.summary || publicItem.scheduleNote || publicItem.followUpNote) ? `<section class="card">
+      <h2>Notes</h2>
+      ${publicItem.summary ? `<p>${escapeHtml(publicItem.summary)}</p>` : ""}
+      ${publicItem.scheduleNote ? `<p class="note">${escapeHtml(publicItem.scheduleNote)}</p>` : ""}
+      ${publicItem.followUpNote ? `<p class="note">${escapeHtml(publicItem.followUpNote)}</p>` : ""}
+    </section>` : ""}
+
+    <section class="card">
+      <h2>Raw Intake</h2>
+      <pre>${escapeHtml(raw)}</pre>
+    </section>
+  </main>
+  <script>
+    const suffix = window.location.search || "";
+    const button = document.getElementById("notify-owner");
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Sending...";
+      const response = await fetch("/leads/notify-owner" + suffix, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: ${JSON.stringify(publicItem.id)} }),
+      });
+      if (response.ok) location.reload();
+      else {
+        button.disabled = false;
+        button.textContent = "Notify owner";
+        alert("Could not notify owner.");
+      }
     });
   </script>
 </body>
@@ -2463,6 +2610,22 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderLeadsPage(leads, url));
     }
 
+    if (req.method === "GET" && url.pathname.startsWith("/admin/leads/")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      const id = decodeURIComponent(url.pathname.replace("/admin/leads/", ""));
+      const lead = await findLeadById(id);
+      if (!lead) return html(res, 404, renderNotFoundLeadViewer());
+
+      return html(res, 200, renderLeadDetailPage(lead, url));
+    }
+
     if (req.method === "GET" && (url.pathname === "/events" || url.pathname === "/admin/events")) {
       if (!leadViewerKey()) {
         return html(res, 503, renderLeadViewerDisabled());
@@ -2487,6 +2650,22 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/leads/")) {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const id = decodeURIComponent(url.pathname.replace("/api/leads/", ""));
+      const lead = await findLeadById(id);
+      if (!lead) return json(res, 404, { ok: false, error: "lead_not_found" });
+
+      return json(res, 200, { ok: true, lead: publicLead(lead) });
     }
 
     if (req.method === "GET" && url.pathname === "/api/events") {
