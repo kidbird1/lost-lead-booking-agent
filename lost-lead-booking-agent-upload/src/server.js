@@ -47,6 +47,20 @@ async function readJson(req) {
   return JSON.parse(raw);
 }
 
+async function readFormOrJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw) return {};
+
+  const contentType = String(req.headers["content-type"] || "");
+  if (contentType.includes("application/json")) {
+    return JSON.parse(raw);
+  }
+
+  return Object.fromEntries(new URLSearchParams(raw).entries());
+}
+
 async function appendJson(fileUrl, item) {
   return enqueueJsonWrite(fileUrl, async () => {
     const current = await readJsonFile(fileUrl);
@@ -281,6 +295,12 @@ function systemStatusSnapshot(req, url) {
         label: "Vapi webhook",
         status: "ready",
         detail: `${requestBaseUrl(req, url)}/webhooks/voice`,
+      },
+      {
+        key: "voice_fallback",
+        label: "Twilio voice fallback",
+        status: "ready",
+        detail: `${requestBaseUrl(req, url)}/webhooks/twilio/voice-fallback`,
       },
       {
         key: "twilio_credentials",
@@ -680,8 +700,27 @@ function publicLead(lead) {
     calendarStatus: lead.calendarStatus || "",
     calendarEventId: lead.calendarEventId || "",
     calendarLink: lead.calendarLink || "",
+    ownerNotificationMode: lead.ownerNotificationMode || "",
+    ownerNotificationChannel: lead.ownerNotificationChannel || "",
+    ownerNotificationStatus: lead.ownerNotificationStatus || "",
+    ownerNotificationError: lead.ownerNotificationError || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
+  };
+}
+
+function publicEvent(event) {
+  return {
+    id: event.id || "",
+    createdAt: event.createdAt || "",
+    provider: event.provider || "",
+    type: event.type || "",
+    summary: event.summary || event.raw?.message?.type || event.raw?.type || "",
+    callId: event.raw?.message?.call?.id
+      || event.raw?.message?.callId
+      || event.raw?.CallSid
+      || event.raw?.callSid
+      || "",
   };
 }
 
@@ -710,6 +749,10 @@ function leadsCsv(leads) {
     "appointmentEndIso",
     "calendarStatus",
     "calendarLink",
+    "ownerNotificationMode",
+    "ownerNotificationChannel",
+    "ownerNotificationStatus",
+    "ownerNotificationError",
     "summary",
     "followUpNote",
     "callId",
@@ -734,6 +777,19 @@ function phoneHref(value, channel = "tel") {
 
 function statusLabel(status) {
   return String(status || "new").replaceAll("_", " ");
+}
+
+function ownerNotificationLabel(lead) {
+  if (!lead.ownerNotificationMode) return "";
+  if (lead.ownerNotificationMode === "live") {
+    const channel = lead.ownerNotificationChannel || "message";
+    const status = lead.ownerNotificationStatus || "sent";
+    return `Owner alert: ${channel} ${status}`;
+  }
+  if (lead.ownerNotificationMode === "test") return "Owner alert: test mode";
+  if (lead.ownerNotificationMode === "skipped") return `Owner alert: skipped${lead.ownerNotificationError ? ` (${lead.ownerNotificationError})` : ""}`;
+  if (lead.ownerNotificationMode === "error") return `Owner alert error: ${lead.ownerNotificationError || "check Twilio settings"}`;
+  return `Owner alert: ${lead.ownerNotificationMode}`;
 }
 
 function renderLeadViewerDisabled() {
@@ -1162,6 +1218,7 @@ function renderLeadsPage(leads, url) {
     const call = phoneHref(lead.phone, "tel");
     const sms = phoneHref(lead.phone, "sms");
     const whatsapp = phoneHref(lead.phone, "whatsapp");
+    const ownerAlert = ownerNotificationLabel(lead);
 
     return `<article class="lead" data-status="${escapeHtml(lead.status)}" data-id="${escapeHtml(lead.id)}">
       <div class="lead-head">
@@ -1180,12 +1237,14 @@ function renderLeadsPage(leads, url) {
       </dl>
       ${lead.summary ? `<p class="summary">${escapeHtml(lead.summary)}</p>` : ""}
       ${lead.scheduleNote && lead.scheduleStatus !== "scheduled" ? `<p class="note">${escapeHtml(lead.scheduleNote)}</p>` : ""}
+      ${ownerAlert ? `<p class="note">${escapeHtml(ownerAlert)}</p>` : ""}
       ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
       <div class="actions">
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
         ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
         ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
         ${lead.calendarLink ? `<a href="${escapeHtml(lead.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
+        <button type="button" data-notify-owner>Notify owner</button>
         <button type="button" data-action="needs_follow_up">Follow up</button>
         <button type="button" data-action="contacted">Contacted</button>
         <button type="button" data-action="booked">Booked</button>
@@ -1255,7 +1314,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1301,7 +1360,86 @@ function renderLeadsPage(leads, url) {
         else alert("Could not update lead.");
       });
     });
+    document.querySelectorAll("[data-notify-owner]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const lead = button.closest(".lead");
+        button.disabled = true;
+        button.textContent = "Sending...";
+        const response = await fetch("/leads/notify-owner" + suffix, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: lead.dataset.id }),
+        });
+        if (response.ok) location.reload();
+        else {
+          button.disabled = false;
+          button.textContent = "Notify owner";
+          alert("Could not notify owner.");
+        }
+      });
+    });
   </script>
+</body>
+</html>`;
+}
+
+function renderEventsPage(events, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const rows = events
+    .map(publicEvent)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .slice(0, 100)
+    .map((event) => `<tr>
+      <td>${escapeHtml(formatDate(event.createdAt))}</td>
+      <td>${escapeHtml(event.provider || "Unknown")}</td>
+      <td>${escapeHtml(event.type || "Unknown")}</td>
+      <td>${escapeHtml(event.callId || "")}</td>
+      <td>${escapeHtml(event.summary || "")}</td>
+    </tr>`)
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(profile.businessName)} Events</title>
+  <style>
+    :root { color-scheme: light; --ink: #171717; --muted: #5f6673; --paper: #fbfaf6; --line: #ddd8cb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    header { background: #fff; border-bottom: 1px solid var(--line); }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    .sub { margin: 8px 0 0; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin-top: 22px; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    th, td { padding: 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+    th { background: #f4f0e7; font-size: 13px; color: var(--muted); }
+    tr:last-child td { border-bottom: 0; }
+    .empty { border: 1px dashed var(--line); border-radius: 8px; padding: 36px; margin-top: 22px; text-align: center; color: var(--muted); background: #fff; }
+    @media (max-width: 760px) {
+      .wrap { padding: 18px; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      td { border-bottom: 0; padding: 8px 12px; }
+      tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>${escapeHtml(profile.businessName)} Event Log</h1>
+      <p class="sub">Recent Vapi and Twilio webhook activity. <a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/api/events${escapeHtml(suffix)}">JSON</a></p>
+    </div>
+  </header>
+  <main class="wrap">
+    ${rows ? `<table>
+      <thead><tr><th>Time</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : `<div class="empty">No events saved yet.</div>`}
+  </main>
 </body>
 </html>`;
 }
@@ -1327,6 +1465,19 @@ async function updateLeadStatus({ id, status, note }) {
     await writeJsonFile(leadsFile, leads);
     return { ok: true, lead: publicLead(leads[index]) };
   });
+}
+
+async function notifyOwnerForLead(id) {
+  const lead = await findLeadById(id);
+  if (!lead) return { ok: false, error: "lead_not_found" };
+
+  const notification = await sendOwnerNotification(lead);
+  const updatedLead = await recordOwnerNotification(lead, notification);
+  return {
+    ok: notification.mode !== "error",
+    notification,
+    lead: publicLead(updatedLead || lead),
+  };
 }
 
 async function updateStoredLead(id, updates) {
@@ -1368,6 +1519,10 @@ function normalizeLead(input = {}) {
     calendarStatus: parameters.calendarStatus || "",
     calendarEventId: parameters.calendarEventId || "",
     calendarLink: parameters.calendarLink || "",
+    ownerNotificationMode: parameters.ownerNotificationMode || "",
+    ownerNotificationChannel: parameters.ownerNotificationChannel || "",
+    ownerNotificationStatus: parameters.ownerNotificationStatus || "",
+    ownerNotificationError: parameters.ownerNotificationError || "",
     summary: parameters.summary || input.summary || "",
     raw: input,
   };
@@ -1386,6 +1541,12 @@ async function findLeadByCallId(callId) {
   if (!callId) return null;
   const leads = await readJsonFile(leadsFile);
   return leads.find((lead) => lead.callId === callId) || null;
+}
+
+async function findLeadById(id) {
+  if (!id) return null;
+  const leads = await readJsonFile(leadsFile);
+  return leads.find((lead) => lead.id === id) || null;
 }
 
 async function saveLead(input) {
@@ -1411,6 +1572,10 @@ async function saveLead(input) {
     calendarStatus: input.calendarStatus || "",
     calendarEventId: input.calendarEventId || "",
     calendarLink: input.calendarLink || "",
+    ownerNotificationMode: input.ownerNotificationMode || "",
+    ownerNotificationChannel: input.ownerNotificationChannel || "",
+    ownerNotificationStatus: input.ownerNotificationStatus || "",
+    ownerNotificationError: input.ownerNotificationError || "",
     summary: input.summary || "",
     raw: input,
   };
@@ -1870,6 +2035,20 @@ async function sendOwnerNotification(lead) {
   return { mode: "test", message };
 }
 
+function ownerNotificationFields(result = {}) {
+  return {
+    ownerNotificationMode: result.mode || "",
+    ownerNotificationChannel: result.channel || "",
+    ownerNotificationStatus: result.status || "",
+    ownerNotificationError: result.error || result.payload?.message || result.reason || "",
+  };
+}
+
+async function recordOwnerNotification(lead, result) {
+  if (!lead?.id) return lead;
+  return await updateStoredLead(lead.id, ownerNotificationFields(result)) || lead;
+}
+
 async function sendCustomerConfirmation(lead) {
   if (process.env.SEND_CUSTOMER_CONFIRMATIONS !== "true") {
     return { mode: "skipped", reason: "customer_confirmations_disabled" };
@@ -1971,6 +2150,7 @@ async function processBooking(input) {
   }
 
   const ownerNotification = await sendOwnerNotification(lead);
+  lead = await recordOwnerNotification(lead, ownerNotification);
   const customerConfirmation = lead.status === "booked"
     ? await sendCustomerConfirmation(lead)
     : { mode: "skipped", reason: "not_booked" };
@@ -2122,6 +2302,60 @@ async function handleVapiWebhook(body) {
   return { ok: true, type };
 }
 
+function twiml(res, body) {
+  res.writeHead(200, {
+    "content-type": "text/xml; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+function renderVoiceFallbackTwiml(req, url) {
+  const profile = businessProfile();
+  const baseUrl = requestBaseUrl(req, url);
+  const recordingUrl = `${baseUrl}/webhooks/twilio/recording`;
+  const message = [
+    `Thanks for calling ${profile.businessName}.`,
+    "Our booking assistant is unavailable for a moment.",
+    "Please leave your name, phone number, what you need help with, your address or ZIP code, and your preferred appointment time after the tone.",
+    "The team will follow up.",
+  ].join(" ");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">${escapeHtml(message)}</Say>
+  <Record action="${escapeHtml(recordingUrl)}" method="POST" transcribe="true" transcribeCallback="${escapeHtml(recordingUrl)}" maxLength="120" timeout="8" playBeep="true" />
+  <Say voice="alice">Thanks. We received your message. Goodbye.</Say>
+  <Hangup />
+</Response>`;
+}
+
+async function handleTwilioRecording(body = {}) {
+  const transcript = body.TranscriptionText || body.transcriptionText || "";
+  const recordingUrl = body.RecordingUrl || body.recordingUrl || "";
+  const from = body.From || body.from || "";
+  const callId = body.CallSid || body.callSid || "";
+  const summary = transcript
+    || (recordingUrl ? `Fallback voicemail recording: ${recordingUrl}` : "Fallback voicemail received.");
+
+  const existing = await findLeadByCallId(callId);
+  if (existing) {
+    return { ok: true, leadId: existing.id, duplicate: true };
+  }
+
+  const lead = await saveLead(normalizeLead({
+    source: "twilio_voice_fallback",
+    status: "needs_follow_up",
+    phone: from,
+    summary,
+    callId,
+    raw: body,
+  }));
+  const notification = await sendOwnerNotification(lead);
+  await recordOwnerNotification(lead, notification);
+  return { ok: true, leadId: lead.id, notification };
+}
+
 function json(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -2201,6 +2435,19 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderLeadsPage(leads, url));
     }
 
+    if (req.method === "GET" && (url.pathname === "/events" || url.pathname === "/admin/events")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      const events = await readJsonFile(eventsFile);
+      return html(res, 200, renderEventsPage(events, url));
+    }
+
     if (req.method === "GET" && url.pathname === "/api/leads") {
       if (!leadViewerKey()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
@@ -2212,6 +2459,25 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/events") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const events = await readJsonFile(eventsFile);
+      return json(res, 200, {
+        ok: true,
+        events: events
+          .map(publicEvent)
+          .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+          .slice(0, 100),
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/api/leads.csv") {
@@ -2318,6 +2584,20 @@ const server = http.createServer(async (req, res) => {
       return json(res, result.ok ? 200 : 400, result);
     }
 
+    if (req.method === "POST" && url.pathname === "/leads/notify-owner") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const body = await readJson(req);
+      const result = await notifyOwnerForLead(body.id);
+      return json(res, result.ok ? 200 : 400, result);
+    }
+
     if (req.method === "POST" && url.pathname === "/leads") {
       if (!leadViewerKey()) {
         return json(res, 503, { ok: false, error: "manual_leads_disabled" });
@@ -2330,6 +2610,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const processed = await processBooking({ ...body, source: "manual" });
       return json(res, 201, { ok: true, ...processed });
+    }
+
+    if ((req.method === "GET" || req.method === "POST") && url.pathname === "/webhooks/twilio/voice-fallback") {
+      return twiml(res, renderVoiceFallbackTwiml(req, url));
+    }
+
+    if (req.method === "POST" && url.pathname === "/webhooks/twilio/recording") {
+      await handleTwilioRecording(await readFormOrJson(req));
+      return twiml(res, `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">Thanks. We received your message. Goodbye.</Say>
+  <Hangup />
+</Response>`);
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/voice") {

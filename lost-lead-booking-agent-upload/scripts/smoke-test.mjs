@@ -9,6 +9,7 @@ const busySlotCallId = `call_busy_slot_${Date.now()}`;
 const spokenTimeCallId = `call_spoken_time_${Date.now()}`;
 const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
+const fallbackCallId = `call_fallback_${Date.now()}`;
 const businessProfile = {
   businessName: "Blue Sky Plumbing",
   assistantName: "Riley",
@@ -49,6 +50,19 @@ async function post(path, body) {
   const payload = await response.json();
   if (!response.ok) {
     throw new Error(`${path} failed: ${JSON.stringify(payload)}`);
+  }
+  return payload;
+}
+
+async function postForm(path, body) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(body),
+  });
+  const payload = await response.text();
+  if (!response.ok) {
+    throw new Error(`${path} failed: ${payload}`);
   }
   return payload;
 }
@@ -117,6 +131,9 @@ try {
   if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "ready")) {
     throw new Error("expected system status to show calendar booking ready in mock live mode");
   }
+  if (!systemStatus.checks.some((check) => check.key === "voice_fallback" && check.status === "ready")) {
+    throw new Error("expected system status to show Twilio voice fallback ready");
+  }
 
   const previewResult = await post(`/api/profile-preview?token=${leadViewerToken}`, {
     businessName: "Bright Root Dental",
@@ -127,6 +144,26 @@ try {
   });
   if (!previewResult.prompt.includes("Bright Root Dental") || !previewResult.envSnippet.includes("BUSINESS_NAME=Bright Root Dental")) {
     throw new Error("expected onboarding preview to generate profile output");
+  }
+
+  const fallbackTwiml = await fetch(`${baseUrl}/webhooks/twilio/voice-fallback`).then((res) => res.text());
+  if (!fallbackTwiml.includes("<Record") || !fallbackTwiml.includes("/webhooks/twilio/recording")) {
+    throw new Error("expected Twilio fallback endpoint to return recording TwiML");
+  }
+
+  await postForm("/webhooks/twilio/recording", {
+    CallSid: fallbackCallId,
+    From: "+15555550128",
+    TranscriptionText: "My name is Backup Caller. I need leak repair at ZIP 33487 tomorrow at 10 AM.",
+  });
+
+  const fallbackPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const fallbackLead = fallbackPayload.leads.find((lead) => lead.callId === fallbackCallId);
+  if (!fallbackLead || fallbackLead.status !== "needs_follow_up" || fallbackLead.source !== "twilio_voice_fallback") {
+    throw new Error("expected Twilio fallback recording to save a follow-up lead");
+  }
+  if (fallbackLead.ownerNotificationMode !== "test") {
+    throw new Error("expected fallback lead to record owner notification status");
   }
 
   const availabilityResult = await post("/webhooks/voice", {
@@ -204,9 +241,29 @@ try {
   if (matchingLeads[0].calendarStatus !== "live" || !matchingLeads[0].calendarLink) {
     throw new Error("expected in-hours booking to create a calendar event");
   }
+  if (matchingLeads[0].ownerNotificationMode !== "test") {
+    throw new Error("expected booking lead to record owner notification status");
+  }
+
+  const notifyAgainResult = await post(`/leads/notify-owner?token=${leadViewerToken}`, {
+    id: matchingLeads[0].id,
+  });
+  if (!notifyAgainResult.ok || notifyAgainResult.notification?.mode !== "test") {
+    throw new Error("expected protected owner notification resend to work in test mode");
+  }
+
+  const eventsPage = await fetch(`${baseUrl}/admin/events?token=${leadViewerToken}`).then((res) => res.text());
+  if (!eventsPage.includes("Event Log") || !eventsPage.includes("tool-calls")) {
+    throw new Error("expected protected event log page to show webhook events");
+  }
+
+  const eventsPayload = await fetch(`${baseUrl}/api/events?token=${leadViewerToken}`).then((res) => res.json());
+  if (!eventsPayload.ok || !eventsPayload.events.some((event) => event.type === "tool-calls")) {
+    throw new Error("expected protected event API to include tool-call events");
+  }
 
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
-  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("Smoke Test")) {
+  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");
   }
 
