@@ -38,6 +38,7 @@
 - [x] Add GitHub handoff docs for future LLM continuation
 - [x] Add protected system status page
 - [x] Add configurable data directory for persistent storage
+- [x] Add lightweight business ID metadata for future multi-client routing
 
 ## Phase 3 - Test
 
