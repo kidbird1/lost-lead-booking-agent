@@ -11,6 +11,7 @@ const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
 const fallbackCallId = `call_fallback_${Date.now()}`;
 const businessProfile = {
+  businessId: "blue-sky-plumbing",
   businessName: "Blue Sky Plumbing",
   assistantName: "Riley",
   industry: "plumbing",
@@ -98,6 +99,9 @@ try {
   if (!agentContext.ok || agentContext.profile.businessName !== businessProfile.businessName) {
     throw new Error("expected agent context to use business profile");
   }
+  if (agentContext.profile.businessId !== businessProfile.businessId) {
+    throw new Error("expected agent context to expose business ID");
+  }
   if (!agentContext.prompt.includes("Blue Sky Plumbing") || !agentContext.firstMessage.includes("Blue Sky Plumbing")) {
     throw new Error("expected generated prompt and first message to use business profile");
   }
@@ -127,6 +131,9 @@ try {
   }
   if (!systemStatus.ready) {
     throw new Error("expected system status to be ready in mock live mode");
+  }
+  if (systemStatus.profile.businessId !== businessProfile.businessId) {
+    throw new Error("expected system status to expose business ID");
   }
   if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "ready")) {
     throw new Error("expected system status to show calendar booking ready in mock live mode");
@@ -161,6 +168,9 @@ try {
   const fallbackLead = fallbackPayload.leads.find((lead) => lead.callId === fallbackCallId);
   if (!fallbackLead || fallbackLead.status !== "needs_follow_up" || fallbackLead.source !== "twilio_voice_fallback") {
     throw new Error("expected Twilio fallback recording to save a follow-up lead");
+  }
+  if (fallbackLead.businessId !== businessProfile.businessId) {
+    throw new Error("expected fallback lead to include business ID");
   }
   if (fallbackLead.ownerNotificationMode !== "test") {
     throw new Error("expected fallback lead to record owner notification status");
@@ -238,6 +248,9 @@ try {
   if (matchingLeads[0].status !== "booked" || matchingLeads[0].scheduleStatus !== "scheduled") {
     throw new Error("expected in-hours booking to be scheduled");
   }
+  if (matchingLeads[0].businessId !== businessProfile.businessId) {
+    throw new Error("expected booking lead to include business ID");
+  }
   if (matchingLeads[0].calendarStatus !== "live" || !matchingLeads[0].calendarLink) {
     throw new Error("expected in-hours booking to create a calendar event");
   }
@@ -263,7 +276,7 @@ try {
   }
 
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
-  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
+  if (!leadsCsv.includes("businessId,createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");
   }
 

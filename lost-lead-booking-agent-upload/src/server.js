@@ -154,9 +154,20 @@ function listWithFallback(value, fallback = []) {
   return list.length ? list : fallback;
 }
 
+function slugFromValue(value = "") {
+  const slug = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "default-business";
+}
+
 function businessProfile() {
   const configured = parseJsonObject(process.env.BUSINESS_PROFILE_JSON);
+  const businessName = configured.businessName || process.env.BUSINESS_NAME || defaultBusinessName;
   return {
+    businessId: configured.businessId || process.env.BUSINESS_ID || slugFromValue(businessName),
     businessName: configured.businessName || process.env.BUSINESS_NAME || defaultBusinessName,
     assistantName: configured.assistantName || process.env.ASSISTANT_NAME || defaultAssistantName,
     industry: configured.industry || process.env.BUSINESS_INDUSTRY || "home services",
@@ -177,8 +188,10 @@ function businessProfile() {
 function profileFromInput(input = {}) {
   const configured = parseJsonObject(input.businessProfileJson);
   const source = Object.keys(configured).length ? configured : input;
+  const businessName = source.businessName || defaultBusinessName;
   return {
-    businessName: source.businessName || defaultBusinessName,
+    businessId: source.businessId || slugFromValue(businessName),
+    businessName,
     assistantName: source.assistantName || defaultAssistantName,
     industry: source.industry || "home services",
     ownerName: source.ownerName || "",
@@ -201,6 +214,7 @@ function businessProfileJson(profile) {
 
 function profileEnvSnippet(profile) {
   return [
+    `BUSINESS_ID=${profile.businessId || slugFromValue(profile.businessName)}`,
     `BUSINESS_NAME=${profile.businessName}`,
     `ASSISTANT_NAME=${profile.assistantName}`,
     `BUSINESS_INDUSTRY=${profile.industry}`,
@@ -216,6 +230,7 @@ function profileEnvSnippet(profile) {
 
 function publicBusinessProfile(profile = businessProfile()) {
   return {
+    businessId: profile.businessId || slugFromValue(profile.businessName),
     businessName: profile.businessName,
     assistantName: profile.assistantName,
     industry: profile.industry,
@@ -679,6 +694,7 @@ function requestBaseUrl(req, url) {
 function publicLead(lead) {
   return {
     id: lead.id,
+    businessId: lead.businessId || "",
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt || "",
     callId: lead.callId || "",
@@ -712,6 +728,7 @@ function publicLead(lead) {
 function publicEvent(event) {
   return {
     id: event.id || "",
+    businessId: event.businessId || event.raw?.businessId || "",
     createdAt: event.createdAt || "",
     provider: event.provider || "",
     type: event.type || "",
@@ -733,6 +750,7 @@ function csvCell(value) {
 
 function leadsCsv(leads) {
   const columns = [
+    "businessId",
     "createdAt",
     "updatedAt",
     "status",
@@ -911,6 +929,7 @@ function renderSystemStatusPage(req, url) {
     </section>
 
     <section class="meta" aria-label="Runtime details">
+      <div><strong>Client ID</strong><span>${escapeHtml(snapshot.profile.businessId)}</span></div>
       <div><strong>Timezone</strong><span>${escapeHtml(snapshot.businessTimezone)}</span></div>
       <div><strong>Business Hours</strong><span>${escapeHtml(snapshot.businessHours.start)} to ${escapeHtml(snapshot.businessHours.end)}</span></div>
       <div><strong>Base URL</strong><span>${escapeHtml(snapshot.baseUrl)}</span></div>
@@ -1004,6 +1023,7 @@ function renderProfilePage(req, url) {
         <h2>Client Profile</h2>
         <dl>
           <div><dt>Business</dt><dd>${escapeHtml(profile.businessName)}</dd></div>
+          <div><dt>Client ID</dt><dd>${escapeHtml(profile.businessId)}</dd></div>
           <div><dt>Assistant</dt><dd>${escapeHtml(profile.assistantName)}</dd></div>
           <div><dt>Industry</dt><dd>${escapeHtml(profile.industry)}</dd></div>
           <div><dt>Timezone</dt><dd>${escapeHtml(businessTimeZone())}</dd></div>
@@ -1230,6 +1250,7 @@ function renderLeadsPage(leads, url) {
         <span class="status status-${escapeHtml(lead.status)}">${escapeHtml(statusLabel(lead.status))}</span>
       </div>
       <dl>
+        <div><dt>Client</dt><dd>${escapeHtml(lead.businessId || profile.businessId)}</dd></div>
         <div><dt>Phone</dt><dd>${escapeHtml(lead.phone || "Unknown")}</dd></div>
         <div><dt>Address</dt><dd>${escapeHtml(lead.address || "Unknown")}</dd></div>
         <div><dt>Urgency</dt><dd>${escapeHtml(lead.urgency || "Unknown")}</dd></div>
@@ -1392,6 +1413,7 @@ function renderEventsPage(events, url) {
     .slice(0, 100)
     .map((event) => `<tr>
       <td>${escapeHtml(formatDate(event.createdAt))}</td>
+      <td>${escapeHtml(event.businessId || profile.businessId)}</td>
       <td>${escapeHtml(event.provider || "Unknown")}</td>
       <td>${escapeHtml(event.type || "Unknown")}</td>
       <td>${escapeHtml(event.callId || "")}</td>
@@ -1436,7 +1458,7 @@ function renderEventsPage(events, url) {
   </header>
   <main class="wrap">
     ${rows ? `<table>
-      <thead><tr><th>Time</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
+      <thead><tr><th>Time</th><th>Client</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>` : `<div class="empty">No events saved yet.</div>`}
   </main>
@@ -1499,7 +1521,9 @@ async function updateStoredLead(id, updates) {
 
 function normalizeLead(input = {}) {
   const parameters = input.parameters || input.arguments || input;
+  const profile = businessProfile();
   return {
+    businessId: parameters.businessId || input.businessId || profile.businessId,
     callId: parameters.callId || input.callId || input.call?.id || "",
     status: parameters.status || input.status || "new",
     source: input.source || "voice",
@@ -1550,8 +1574,10 @@ async function findLeadById(id) {
 }
 
 async function saveLead(input) {
+  const profile = businessProfile();
   const lead = {
     id: randomUUID(),
+    businessId: input.businessId || profile.businessId,
     createdAt: new Date().toISOString(),
     callId: input.callId || "",
     status: input.status || "new",
@@ -1583,8 +1609,10 @@ async function saveLead(input) {
 }
 
 async function saveEvent(input) {
+  const profile = businessProfile();
   return appendJson(eventsFile, {
     id: randomUUID(),
+    businessId: input.businessId || profile.businessId,
     createdAt: new Date().toISOString(),
     ...input,
   });
