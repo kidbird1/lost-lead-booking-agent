@@ -48,3 +48,4 @@
 - Lead review should support one-click inspection: each protected lead card links to a protected detail page with raw intake, owner alert status, calendar status, and resend-owner notification action.
 - Webhook protection should be optional for the pilot. If `WEBHOOK_SHARED_SECRET` or `VOICE_WEBHOOK_SECRET` is set, Vapi and Twilio fallback webhooks require the configured secret; if unset, existing live calls keep working.
 - Owner follow-up actions should leave a short status history on each lead so the business can see contacted/booked/lost changes over time instead of only the latest note.
+- The protected system status page should show a plain-English pilot readiness summary, including blockers, optional warnings, and next actions, so setup gaps are visible without reading JSON.

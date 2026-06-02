@@ -256,6 +256,42 @@ function readinessStatus(ready, off = false) {
   return off ? "off" : "missing";
 }
 
+function pilotReadinessSummary(checks) {
+  const blockers = checks.filter((check) => check.status === "missing");
+  const optional = checks.filter((check) => check.status === "off");
+
+  if (blockers.length) {
+    return {
+      status: "needs_setup",
+      label: "Needs setup before pilot",
+      summary: `${blockers.length} required setup item${blockers.length === 1 ? "" : "s"} need attention before live testing.`,
+      nextActions: blockers.map((check) => `${check.label}: ${check.detail}`),
+      blockers,
+      optional,
+    };
+  }
+
+  if (optional.length) {
+    return {
+      status: "ready_with_notes",
+      label: "Ready with optional items off",
+      summary: "The core booking flow can run. Some optional safety or delivery features are turned off.",
+      nextActions: optional.slice(0, 4).map((check) => `${check.label}: ${check.detail}`),
+      blockers,
+      optional,
+    };
+  }
+
+  return {
+    status: "ready",
+    label: "Ready for pilot",
+    summary: "Core booking, lead capture, owner alerts, and calendar checks are ready.",
+    nextActions: ["Run one live Vapi call and confirm the lead, owner alert, and calendar result."],
+    blockers,
+    optional,
+  };
+}
+
 function systemStatusSnapshot(req, url) {
   const profile = businessProfile();
   const messagingLive = envIsTrue("SEND_LIVE_MESSAGES");
@@ -270,7 +306,7 @@ function systemStatusSnapshot(req, url) {
     && envIsSet("GOOGLE_CALENDAR_ID");
   const { start, end } = businessHours();
 
-  return {
+  const snapshot = {
     ok: true,
     service: "lost-lead-booking-agent",
     ready: Boolean(leadViewerKey())
@@ -367,6 +403,8 @@ function systemStatusSnapshot(req, url) {
       },
     ],
   };
+  snapshot.pilotReadiness = pilotReadinessSummary(snapshot.checks);
+  return snapshot;
 }
 
 function firstMessageForProfile(profile = businessProfile()) {
@@ -940,6 +978,13 @@ function renderSystemStatusPage(req, url) {
   const snapshot = systemStatusSnapshot(req, url);
   const suffix = leadViewerUrlSuffix(url);
   const statusClass = (status) => `state state-${escapeHtml(status)}`;
+  const readiness = snapshot.pilotReadiness;
+  const readinessStatus = readiness.status === "needs_setup"
+    ? "missing"
+    : readiness.status === "ready"
+      ? "ready"
+      : "off";
+  const nextActions = readiness.nextActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
   const rows = snapshot.checks.map((check) => `<article class="check">
     <div>
       <h2>${escapeHtml(check.label)}</h2>
@@ -975,6 +1020,9 @@ function renderSystemStatusPage(req, url) {
     a { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); text-decoration: none; }
     .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 20px; }
     .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .readiness { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; margin: 0 0 20px; }
+    .readiness-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
+    .readiness ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); line-height: 1.45; }
     .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
     .meta div, .check { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
     .meta strong { display: block; font-size: 14px; margin-bottom: 6px; }
@@ -986,7 +1034,7 @@ function renderSystemStatusPage(req, url) {
     .state-off { background: #f4ead0; color: var(--gold); }
     .state-missing { background: #f6e1df; color: var(--red); }
     @media (max-width: 760px) {
-      .top, .check { display: block; }
+      .top, .check, .readiness-head { display: block; }
       .links { justify-content: start; margin-top: 14px; }
       .meta { grid-template-columns: 1fr; }
       .state { margin-top: 12px; }
@@ -1005,6 +1053,20 @@ function renderSystemStatusPage(req, url) {
         <a href="/admin/profile${escapeHtml(suffix)}">Setup</a>
         <a href="/api/system-status${escapeHtml(suffix)}">JSON</a>
       </nav>
+    </section>
+
+    <section class="readiness" aria-label="Pilot readiness">
+      <div class="readiness-head">
+        <div>
+          <h2>Pilot Readiness</h2>
+          <p><strong>${escapeHtml(readiness.label)}</strong></p>
+          <p>${escapeHtml(readiness.summary)}</p>
+        </div>
+        <span class="${statusClass(readinessStatus)}">${escapeHtml(readiness.status.replaceAll("_", " "))}</span>
+      </div>
+      <ul>
+        ${nextActions}
+      </ul>
     </section>
 
     <section class="meta" aria-label="Runtime details">

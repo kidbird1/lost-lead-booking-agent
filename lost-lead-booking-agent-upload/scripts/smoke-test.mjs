@@ -126,7 +126,7 @@ try {
 
   const statusPage = await fetch(`${baseUrl}/admin/status?token=${leadViewerToken}`)
     .then((res) => res.text());
-  if (!statusPage.includes("System Status") || !statusPage.includes("Owner notifications")) {
+  if (!statusPage.includes("System Status") || !statusPage.includes("Owner notifications") || !statusPage.includes("Pilot Readiness")) {
     throw new Error("expected protected system status page to render");
   }
 
@@ -134,6 +134,9 @@ try {
     .then((res) => res.json());
   if (!systemStatus.ok || !Array.isArray(systemStatus.checks)) {
     throw new Error("expected protected system status API to return checks");
+  }
+  if (!systemStatus.pilotReadiness || !Array.isArray(systemStatus.pilotReadiness.nextActions)) {
+    throw new Error("expected protected system status API to return pilot readiness");
   }
   if (!systemStatus.ready) {
     throw new Error("expected system status to be ready in mock live mode");

@@ -42,6 +42,7 @@
 - [x] Add protected single-lead detail page
 - [x] Add optional webhook secret protection
 - [x] Add owner follow-up history on leads
+- [x] Add pilot readiness summary to system status
 
 ## Phase 3 - Test
 
