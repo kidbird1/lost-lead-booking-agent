@@ -47,6 +47,20 @@ async function readJson(req) {
   return JSON.parse(raw);
 }
 
+async function readFormOrJson(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw) return {};
+
+  const contentType = String(req.headers["content-type"] || "");
+  if (contentType.includes("application/json")) {
+    return JSON.parse(raw);
+  }
+
+  return Object.fromEntries(new URLSearchParams(raw).entries());
+}
+
 async function appendJson(fileUrl, item) {
   return enqueueJsonWrite(fileUrl, async () => {
     const current = await readJsonFile(fileUrl);
@@ -281,6 +295,12 @@ function systemStatusSnapshot(req, url) {
         label: "Vapi webhook",
         status: "ready",
         detail: `${requestBaseUrl(req, url)}/webhooks/voice`,
+      },
+      {
+        key: "voice_fallback",
+        label: "Twilio voice fallback",
+        status: "ready",
+        detail: `${requestBaseUrl(req, url)}/webhooks/twilio/voice-fallback`,
       },
       {
         key: "twilio_credentials",
@@ -2122,6 +2142,59 @@ async function handleVapiWebhook(body) {
   return { ok: true, type };
 }
 
+function twiml(res, body) {
+  res.writeHead(200, {
+    "content-type": "text/xml; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  res.end(body);
+}
+
+function renderVoiceFallbackTwiml(req, url) {
+  const profile = businessProfile();
+  const baseUrl = requestBaseUrl(req, url);
+  const recordingUrl = `${baseUrl}/webhooks/twilio/recording`;
+  const message = [
+    `Thanks for calling ${profile.businessName}.`,
+    "Our booking assistant is unavailable for a moment.",
+    "Please leave your name, phone number, what you need help with, your address or ZIP code, and your preferred appointment time after the tone.",
+    "The team will follow up.",
+  ].join(" ");
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">${escapeHtml(message)}</Say>
+  <Record action="${escapeHtml(recordingUrl)}" method="POST" transcribe="true" transcribeCallback="${escapeHtml(recordingUrl)}" maxLength="120" timeout="8" playBeep="true" />
+  <Say voice="alice">Thanks. We received your message. Goodbye.</Say>
+  <Hangup />
+</Response>`;
+}
+
+async function handleTwilioRecording(body = {}) {
+  const transcript = body.TranscriptionText || body.transcriptionText || "";
+  const recordingUrl = body.RecordingUrl || body.recordingUrl || "";
+  const from = body.From || body.from || "";
+  const callId = body.CallSid || body.callSid || "";
+  const summary = transcript
+    || (recordingUrl ? `Fallback voicemail recording: ${recordingUrl}` : "Fallback voicemail received.");
+
+  const existing = await findLeadByCallId(callId);
+  if (existing) {
+    return { ok: true, leadId: existing.id, duplicate: true };
+  }
+
+  const lead = await saveLead(normalizeLead({
+    source: "twilio_voice_fallback",
+    status: "needs_follow_up",
+    phone: from,
+    summary,
+    callId,
+    raw: body,
+  }));
+  const notification = await sendOwnerNotification(lead);
+  return { ok: true, leadId: lead.id, notification };
+}
+
 function json(res, status, body) {
   res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
@@ -2330,6 +2403,19 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
       const processed = await processBooking({ ...body, source: "manual" });
       return json(res, 201, { ok: true, ...processed });
+    }
+
+    if ((req.method === "GET" || req.method === "POST") && url.pathname === "/webhooks/twilio/voice-fallback") {
+      return twiml(res, renderVoiceFallbackTwiml(req, url));
+    }
+
+    if (req.method === "POST" && url.pathname === "/webhooks/twilio/recording") {
+      await handleTwilioRecording(await readFormOrJson(req));
+      return twiml(res, `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="alice">Thanks. We received your message. Goodbye.</Say>
+  <Hangup />
+</Response>`);
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/voice") {

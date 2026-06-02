@@ -66,6 +66,16 @@ https://YOUR-RENDER-APP.onrender.com/webhooks/voice
 
 6. Run a test call.
 
+## Vapi Backup Path
+
+If Vapi is down or unavailable, point the phone provider fallback URL to:
+
+```text
+https://YOUR-RENDER-APP.onrender.com/webhooks/twilio/voice-fallback
+```
+
+This backup path asks the caller to leave their job details, saves the recording/transcript as a follow-up lead, and alerts the owner.
+
 ## Connect Twilio
 
 Needed:
