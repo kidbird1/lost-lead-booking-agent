@@ -985,6 +985,13 @@ function renderSystemStatusPage(req, url) {
       ? "ready"
       : "off";
   const nextActions = readiness.nextActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+  const pilotSteps = [
+    "Confirm Render has the needed env vars and the latest deploy is live.",
+    "Confirm Vapi has the booking tool URL set to /webhooks/voice.",
+    "Make one test call with a real appointment time inside business hours.",
+    "Check that exactly one lead appears in the lead viewer.",
+    "Check the owner alert and Google Calendar result.",
+  ].map((step) => `<li>${escapeHtml(step)}</li>`).join("");
   const rows = snapshot.checks.map((check) => `<article class="check">
     <div>
       <h2>${escapeHtml(check.label)}</h2>
@@ -1023,6 +1030,8 @@ function renderSystemStatusPage(req, url) {
     .readiness { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; margin: 0 0 20px; }
     .readiness-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
     .readiness ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); line-height: 1.45; }
+    .pilot-steps { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; margin: 0 0 20px; }
+    .pilot-steps ol { margin: 8px 0 0; padding-left: 22px; color: var(--muted); line-height: 1.5; }
     .meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 20px 0; }
     .meta div, .check { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 14px; }
     .meta strong { display: block; font-size: 14px; margin-bottom: 6px; }
@@ -1067,6 +1076,13 @@ function renderSystemStatusPage(req, url) {
       <ul>
         ${nextActions}
       </ul>
+    </section>
+
+    <section class="pilot-steps" aria-label="Live pilot checklist">
+      <h2>Live Pilot Checklist</h2>
+      <ol>
+        ${pilotSteps}
+      </ol>
     </section>
 
     <section class="meta" aria-label="Runtime details">

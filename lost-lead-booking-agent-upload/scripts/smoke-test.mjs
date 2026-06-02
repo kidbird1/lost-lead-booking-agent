@@ -126,7 +126,10 @@ try {
 
   const statusPage = await fetch(`${baseUrl}/admin/status?token=${leadViewerToken}`)
     .then((res) => res.text());
-  if (!statusPage.includes("System Status") || !statusPage.includes("Owner notifications") || !statusPage.includes("Pilot Readiness")) {
+  if (!statusPage.includes("System Status")
+    || !statusPage.includes("Owner notifications")
+    || !statusPage.includes("Pilot Readiness")
+    || !statusPage.includes("Live Pilot Checklist")) {
     throw new Error("expected protected system status page to render");
   }
 
