@@ -301,6 +301,12 @@ try {
     throw new Error("expected protected CSV export to include saved leads");
   }
 
+  const backupPayload = await fetch(`${baseUrl}/api/backup.json?token=${leadViewerToken}`)
+    .then((res) => res.json());
+  if (!backupPayload.ok || backupPayload.profile.businessId !== businessProfile.businessId || !backupPayload.leads.some((lead) => lead.name === "Smoke Test")) {
+    throw new Error("expected protected backup export to include profile and saved leads");
+  }
+
   await post("/webhooks/voice", {
     message: {
       type: "tool-calls",

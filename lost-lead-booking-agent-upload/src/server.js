@@ -1366,7 +1366,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a> <a href="/api/backup.json${escapeHtml(suffix)}">Backup JSON</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1678,6 +1678,21 @@ async function notifyOwnerForLead(id) {
     ok: notification.mode !== "error",
     notification,
     lead: publicLead(updatedLead || lead),
+  };
+}
+
+async function buildProtectedBackup() {
+  const [leads, events] = await Promise.all([
+    readJsonFile(leadsFile),
+    readJsonFile(eventsFile),
+  ]);
+
+  return {
+    ok: true,
+    exportedAt: new Date().toISOString(),
+    profile: publicBusinessProfile(businessProfile()),
+    leads: leads.map(publicLead),
+    events: events.map(publicEvent),
   };
 }
 
@@ -2717,6 +2732,18 @@ const server = http.createServer(async (req, res) => {
           .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
           .slice(0, 100),
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/backup.json") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      return json(res, 200, await buildProtectedBackup());
     }
 
     if (req.method === "GET" && url.pathname === "/api/leads.csv") {
