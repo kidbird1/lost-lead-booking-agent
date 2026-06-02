@@ -751,6 +751,7 @@ function publicLead(lead) {
     ownerNotificationError: lead.ownerNotificationError || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
+    followUpHistory: Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [],
   };
 }
 
@@ -771,7 +772,9 @@ function publicEvent(event) {
 }
 
 function csvCell(value) {
-  let text = String(value ?? "");
+  let text = typeof value === "object" && value !== null
+    ? JSON.stringify(value)
+    : String(value ?? "");
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
   if (!/[",\n\r]/.test(text)) return text;
   return `"${text.replaceAll('"', '""')}"`;
@@ -802,6 +805,7 @@ function leadsCsv(leads) {
     "ownerNotificationError",
     "summary",
     "followUpNote",
+    "followUpHistory",
     "callId",
     "source",
   ];
@@ -843,6 +847,22 @@ function ownerNotificationLabel(lead) {
   if (lead.ownerNotificationMode === "skipped") return `Owner alert: skipped${lead.ownerNotificationError ? ` (${lead.ownerNotificationError})` : ""}`;
   if (lead.ownerNotificationMode === "error") return `Owner alert error: ${lead.ownerNotificationError || "check Twilio settings"}`;
   return `Owner alert: ${lead.ownerNotificationMode}`;
+}
+
+function latestFollowUpHistory(lead) {
+  const history = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+  return history
+    .filter((item) => item && (item.note || item.status))
+    .sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+}
+
+function renderFollowUpHistory(lead, limit = 5) {
+  const items = latestFollowUpHistory(lead).slice(0, limit);
+  if (!items.length) return "";
+
+  return `<div class="history">
+    ${items.map((item) => `<p><strong>${escapeHtml(statusLabel(item.status))}</strong> ${escapeHtml(formatDate(item.at))}${item.note ? ` - ${escapeHtml(item.note)}` : ""}</p>`).join("")}
+  </div>`;
 }
 
 function renderLeadViewerDisabled() {
@@ -1319,6 +1339,7 @@ function renderLeadsPage(leads, url) {
       ${lead.scheduleNote && lead.scheduleStatus !== "scheduled" ? `<p class="note">${escapeHtml(lead.scheduleNote)}</p>` : ""}
       ${ownerAlert ? `<p class="note">${escapeHtml(ownerAlert)}</p>` : ""}
       ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
+      ${renderFollowUpHistory(lead, 2)}
       <div class="actions">
         <a href="/admin/leads/${encodeURIComponent(lead.id)}${escapeHtml(suffix)}">Details</a>
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
@@ -1381,6 +1402,8 @@ function renderLeadsPage(leads, url) {
     dd { margin: 0; overflow-wrap: anywhere; }
     .summary, .note { margin: 12px 0 0; line-height: 1.45; color: #323842; }
     .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); }
+    .history { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; color: var(--muted); font-size: 13px; }
+    .history p { margin: 4px 0; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
     .empty { border: 1px dashed var(--line); border-radius: 8px; padding: 36px; text-align: center; color: var(--muted); background: #fff; }
     @media (max-width: 760px) {
@@ -1502,6 +1525,8 @@ function renderLeadDetailPage(lead, url) {
     dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
     dd { margin: 0; overflow-wrap: anywhere; }
     .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); line-height: 1.45; }
+    .history { display: grid; gap: 8px; color: var(--muted); }
+    .history p { margin: 0; line-height: 1.45; }
     .groups { display: grid; gap: 12px; margin-top: 16px; }
     .group-label { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f0e7; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 13px; }
@@ -1566,6 +1591,11 @@ function renderLeadDetailPage(lead, url) {
       ${publicItem.summary ? `<p>${escapeHtml(publicItem.summary)}</p>` : ""}
       ${publicItem.scheduleNote ? `<p class="note">${escapeHtml(publicItem.scheduleNote)}</p>` : ""}
       ${publicItem.followUpNote ? `<p class="note">${escapeHtml(publicItem.followUpNote)}</p>` : ""}
+    </section>` : ""}
+
+    ${latestFollowUpHistory(publicItem).length ? `<section class="card">
+      <h2>Follow-Up History</h2>
+      ${renderFollowUpHistory(publicItem, 20)}
     </section>` : ""}
 
     <section class="card">
@@ -1685,10 +1715,19 @@ async function updateLeadStatus({ id, status, note }) {
     const index = leads.findIndex((lead) => lead.id === id);
     if (index === -1) return { ok: false, error: "lead_not_found" };
 
+    const trimmedNote = String(note || "").trim();
+    const history = Array.isArray(leads[index].followUpHistory) ? leads[index].followUpHistory : [];
+    const historyItem = {
+      at: new Date().toISOString(),
+      status,
+      note: trimmedNote,
+    };
+
     leads[index] = {
       ...leads[index],
       status,
-      followUpNote: note || leads[index].followUpNote || "",
+      followUpNote: trimmedNote || leads[index].followUpNote || "",
+      followUpHistory: [historyItem, ...history].slice(0, 50),
       updatedAt: new Date().toISOString(),
     };
 

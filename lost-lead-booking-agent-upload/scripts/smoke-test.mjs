@@ -300,6 +300,15 @@ try {
   if (!detailStatusResult.ok || detailStatusResult.lead.status !== "contacted") {
     throw new Error("expected protected detail status action to update lead");
   }
+  if (!Array.isArray(detailStatusResult.lead.followUpHistory) || !detailStatusResult.lead.followUpHistory.some((item) => item.note === "Owner called from detail page.")) {
+    throw new Error("expected protected detail status action to save follow-up history");
+  }
+
+  const updatedLeadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
+    .then((res) => res.text());
+  if (!updatedLeadDetailPage.includes("Follow-Up History") || !updatedLeadDetailPage.includes("Owner called from detail page.")) {
+    throw new Error("expected protected lead detail page to show follow-up history");
+  }
 
   const eventsPage = await fetch(`${baseUrl}/admin/events?token=${leadViewerToken}`).then((res) => res.text());
   if (!eventsPage.includes("Event Log") || !eventsPage.includes("tool-calls")) {
@@ -312,7 +321,7 @@ try {
   }
 
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
-  if (!leadsCsv.includes("businessId,createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
+  if (!leadsCsv.includes("businessId,createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("followUpHistory") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");
   }
 

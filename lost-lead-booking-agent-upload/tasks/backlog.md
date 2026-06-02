@@ -41,6 +41,7 @@
 - [x] Add lightweight business ID metadata for future multi-client routing
 - [x] Add protected single-lead detail page
 - [x] Add optional webhook secret protection
+- [x] Add owner follow-up history on leads
 
 ## Phase 3 - Test
 
