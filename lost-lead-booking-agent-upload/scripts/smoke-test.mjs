@@ -252,6 +252,16 @@ try {
     throw new Error("expected protected owner notification resend to work in test mode");
   }
 
+  const eventsPage = await fetch(`${baseUrl}/admin/events?token=${leadViewerToken}`).then((res) => res.text());
+  if (!eventsPage.includes("Event Log") || !eventsPage.includes("tool-calls")) {
+    throw new Error("expected protected event log page to show webhook events");
+  }
+
+  const eventsPayload = await fetch(`${baseUrl}/api/events?token=${leadViewerToken}`).then((res) => res.json());
+  if (!eventsPayload.ok || !eventsPayload.events.some((event) => event.type === "tool-calls")) {
+    throw new Error("expected protected event API to include tool-call events");
+  }
+
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
   if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");

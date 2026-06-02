@@ -709,6 +709,21 @@ function publicLead(lead) {
   };
 }
 
+function publicEvent(event) {
+  return {
+    id: event.id || "",
+    createdAt: event.createdAt || "",
+    provider: event.provider || "",
+    type: event.type || "",
+    summary: event.summary || event.raw?.message?.type || event.raw?.type || "",
+    callId: event.raw?.message?.call?.id
+      || event.raw?.message?.callId
+      || event.raw?.CallSid
+      || event.raw?.callSid
+      || "",
+  };
+}
+
 function csvCell(value) {
   let text = String(value ?? "");
   if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
@@ -1299,7 +1314,7 @@ function renderLeadsPage(leads, url) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -1364,6 +1379,67 @@ function renderLeadsPage(leads, url) {
       });
     });
   </script>
+</body>
+</html>`;
+}
+
+function renderEventsPage(events, url) {
+  const profile = businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const rows = events
+    .map(publicEvent)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .slice(0, 100)
+    .map((event) => `<tr>
+      <td>${escapeHtml(formatDate(event.createdAt))}</td>
+      <td>${escapeHtml(event.provider || "Unknown")}</td>
+      <td>${escapeHtml(event.type || "Unknown")}</td>
+      <td>${escapeHtml(event.callId || "")}</td>
+      <td>${escapeHtml(event.summary || "")}</td>
+    </tr>`)
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(profile.businessName)} Events</title>
+  <style>
+    :root { color-scheme: light; --ink: #171717; --muted: #5f6673; --paper: #fbfaf6; --line: #ddd8cb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    header { background: #fff; border-bottom: 1px solid var(--line); }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    .sub { margin: 8px 0 0; color: var(--muted); }
+    table { width: 100%; border-collapse: collapse; margin-top: 22px; background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    th, td { padding: 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+    th { background: #f4f0e7; font-size: 13px; color: var(--muted); }
+    tr:last-child td { border-bottom: 0; }
+    .empty { border: 1px dashed var(--line); border-radius: 8px; padding: 36px; margin-top: 22px; text-align: center; color: var(--muted); background: #fff; }
+    @media (max-width: 760px) {
+      .wrap { padding: 18px; }
+      table, thead, tbody, tr, th, td { display: block; }
+      thead { display: none; }
+      td { border-bottom: 0; padding: 8px 12px; }
+      tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>${escapeHtml(profile.businessName)} Event Log</h1>
+      <p class="sub">Recent Vapi and Twilio webhook activity. <a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/api/events${escapeHtml(suffix)}">JSON</a></p>
+    </div>
+  </header>
+  <main class="wrap">
+    ${rows ? `<table>
+      <thead><tr><th>Time</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>` : `<div class="empty">No events saved yet.</div>`}
+  </main>
 </body>
 </html>`;
 }
@@ -2359,6 +2435,19 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderLeadsPage(leads, url));
     }
 
+    if (req.method === "GET" && (url.pathname === "/events" || url.pathname === "/admin/events")) {
+      if (!leadViewerKey()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      const events = await readJsonFile(eventsFile);
+      return html(res, 200, renderEventsPage(events, url));
+    }
+
     if (req.method === "GET" && url.pathname === "/api/leads") {
       if (!leadViewerKey()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
@@ -2370,6 +2459,25 @@ const server = http.createServer(async (req, res) => {
 
       const leads = await readJsonFile(leadsFile);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/events") {
+      if (!leadViewerKey()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const events = await readJsonFile(eventsFile);
+      return json(res, 200, {
+        ok: true,
+        events: events
+          .map(publicEvent)
+          .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+          .slice(0, 100),
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/api/leads.csv") {
