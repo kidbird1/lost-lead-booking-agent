@@ -260,7 +260,7 @@ try {
 
   const leadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
     .then((res) => res.text());
-  if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test")) {
+  if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test") || !leadDetailPage.includes("Lead status")) {
     throw new Error("expected protected lead detail page to render saved lead context");
   }
 
@@ -275,6 +275,15 @@ try {
   });
   if (!notifyAgainResult.ok || notifyAgainResult.notification?.mode !== "test") {
     throw new Error("expected protected owner notification resend to work in test mode");
+  }
+
+  const detailStatusResult = await post(`/leads/status?token=${leadViewerToken}`, {
+    id: matchingLeads[0].id,
+    status: "contacted",
+    note: "Owner called from detail page.",
+  });
+  if (!detailStatusResult.ok || detailStatusResult.lead.status !== "contacted") {
+    throw new Error("expected protected detail status action to update lead");
   }
 
   const eventsPage = await fetch(`${baseUrl}/admin/events?token=${leadViewerToken}`).then((res) => res.text());

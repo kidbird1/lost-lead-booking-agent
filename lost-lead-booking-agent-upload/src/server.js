@@ -1473,6 +1473,8 @@ function renderLeadDetailPage(lead, url) {
     dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
     dd { margin: 0; overflow-wrap: anywhere; }
     .note { border-left: 3px solid var(--blue); padding-left: 10px; color: var(--muted); line-height: 1.45; }
+    .groups { display: grid; gap: 12px; margin-top: 16px; }
+    .group-label { margin: 0 0 6px; color: var(--muted); font-size: 12px; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f4f0e7; border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 13px; }
     @media (max-width: 760px) {
       .top { display: block; }
@@ -1507,12 +1509,26 @@ function renderLeadDetailPage(lead, url) {
         ["Calendar", publicItem.calendarStatus || publicItem.scheduleStatus],
         ["Owner alert", ownerAlert],
       ])}</dl>
-      <div class="actions" style="margin-top: 16px;">
-        ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
-        ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
-        ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
-        ${publicItem.calendarLink ? `<a href="${escapeHtml(publicItem.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
-        <button type="button" id="notify-owner">Notify owner</button>
+      <div class="groups">
+        <div>
+          <p class="group-label">Contact</p>
+          <div class="actions">
+            ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
+            ${sms ? `<a href="${escapeHtml(sms)}">Text</a>` : ""}
+            ${whatsapp ? `<a href="${escapeHtml(whatsapp)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ""}
+            ${publicItem.calendarLink ? `<a href="${escapeHtml(publicItem.calendarLink)}" target="_blank" rel="noreferrer">Calendar</a>` : ""}
+            <button type="button" id="notify-owner">Notify owner</button>
+          </div>
+        </div>
+        <div>
+          <p class="group-label">Lead status</p>
+          <div class="actions">
+            <button type="button" data-action="needs_follow_up">Follow up</button>
+            <button type="button" data-action="contacted">Contacted</button>
+            <button type="button" data-action="booked">Booked</button>
+            <button type="button" data-action="lost">Lost</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1545,6 +1561,22 @@ function renderLeadDetailPage(lead, url) {
         button.textContent = "Notify owner";
         alert("Could not notify owner.");
       }
+    });
+    document.querySelectorAll("[data-action]").forEach((actionButton) => {
+      actionButton.addEventListener("click", async () => {
+        const note = prompt("Add a follow-up note", "");
+        actionButton.disabled = true;
+        const response = await fetch("/leads/status" + suffix, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ id: ${JSON.stringify(publicItem.id)}, status: actionButton.dataset.action, note }),
+        });
+        if (response.ok) location.reload();
+        else {
+          actionButton.disabled = false;
+          alert("Could not update lead.");
+        }
+      });
     });
   </script>
 </body>
