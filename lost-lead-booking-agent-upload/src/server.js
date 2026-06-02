@@ -700,6 +700,10 @@ function publicLead(lead) {
     calendarStatus: lead.calendarStatus || "",
     calendarEventId: lead.calendarEventId || "",
     calendarLink: lead.calendarLink || "",
+    ownerNotificationMode: lead.ownerNotificationMode || "",
+    ownerNotificationChannel: lead.ownerNotificationChannel || "",
+    ownerNotificationStatus: lead.ownerNotificationStatus || "",
+    ownerNotificationError: lead.ownerNotificationError || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
   };
@@ -730,6 +734,10 @@ function leadsCsv(leads) {
     "appointmentEndIso",
     "calendarStatus",
     "calendarLink",
+    "ownerNotificationMode",
+    "ownerNotificationChannel",
+    "ownerNotificationStatus",
+    "ownerNotificationError",
     "summary",
     "followUpNote",
     "callId",
@@ -754,6 +762,19 @@ function phoneHref(value, channel = "tel") {
 
 function statusLabel(status) {
   return String(status || "new").replaceAll("_", " ");
+}
+
+function ownerNotificationLabel(lead) {
+  if (!lead.ownerNotificationMode) return "";
+  if (lead.ownerNotificationMode === "live") {
+    const channel = lead.ownerNotificationChannel || "message";
+    const status = lead.ownerNotificationStatus || "sent";
+    return `Owner alert: ${channel} ${status}`;
+  }
+  if (lead.ownerNotificationMode === "test") return "Owner alert: test mode";
+  if (lead.ownerNotificationMode === "skipped") return `Owner alert: skipped${lead.ownerNotificationError ? ` (${lead.ownerNotificationError})` : ""}`;
+  if (lead.ownerNotificationMode === "error") return `Owner alert error: ${lead.ownerNotificationError || "check Twilio settings"}`;
+  return `Owner alert: ${lead.ownerNotificationMode}`;
 }
 
 function renderLeadViewerDisabled() {
@@ -1182,6 +1203,7 @@ function renderLeadsPage(leads, url) {
     const call = phoneHref(lead.phone, "tel");
     const sms = phoneHref(lead.phone, "sms");
     const whatsapp = phoneHref(lead.phone, "whatsapp");
+    const ownerAlert = ownerNotificationLabel(lead);
 
     return `<article class="lead" data-status="${escapeHtml(lead.status)}" data-id="${escapeHtml(lead.id)}">
       <div class="lead-head">
@@ -1200,6 +1222,7 @@ function renderLeadsPage(leads, url) {
       </dl>
       ${lead.summary ? `<p class="summary">${escapeHtml(lead.summary)}</p>` : ""}
       ${lead.scheduleNote && lead.scheduleStatus !== "scheduled" ? `<p class="note">${escapeHtml(lead.scheduleNote)}</p>` : ""}
+      ${ownerAlert ? `<p class="note">${escapeHtml(ownerAlert)}</p>` : ""}
       ${lead.followUpNote ? `<p class="note">${escapeHtml(lead.followUpNote)}</p>` : ""}
       <div class="actions">
         ${call ? `<a href="${escapeHtml(call)}">Call</a>` : ""}
@@ -1388,6 +1411,10 @@ function normalizeLead(input = {}) {
     calendarStatus: parameters.calendarStatus || "",
     calendarEventId: parameters.calendarEventId || "",
     calendarLink: parameters.calendarLink || "",
+    ownerNotificationMode: parameters.ownerNotificationMode || "",
+    ownerNotificationChannel: parameters.ownerNotificationChannel || "",
+    ownerNotificationStatus: parameters.ownerNotificationStatus || "",
+    ownerNotificationError: parameters.ownerNotificationError || "",
     summary: parameters.summary || input.summary || "",
     raw: input,
   };
@@ -1431,6 +1458,10 @@ async function saveLead(input) {
     calendarStatus: input.calendarStatus || "",
     calendarEventId: input.calendarEventId || "",
     calendarLink: input.calendarLink || "",
+    ownerNotificationMode: input.ownerNotificationMode || "",
+    ownerNotificationChannel: input.ownerNotificationChannel || "",
+    ownerNotificationStatus: input.ownerNotificationStatus || "",
+    ownerNotificationError: input.ownerNotificationError || "",
     summary: input.summary || "",
     raw: input,
   };
@@ -1890,6 +1921,20 @@ async function sendOwnerNotification(lead) {
   return { mode: "test", message };
 }
 
+function ownerNotificationFields(result = {}) {
+  return {
+    ownerNotificationMode: result.mode || "",
+    ownerNotificationChannel: result.channel || "",
+    ownerNotificationStatus: result.status || "",
+    ownerNotificationError: result.error || result.payload?.message || result.reason || "",
+  };
+}
+
+async function recordOwnerNotification(lead, result) {
+  if (!lead?.id) return lead;
+  return await updateStoredLead(lead.id, ownerNotificationFields(result)) || lead;
+}
+
 async function sendCustomerConfirmation(lead) {
   if (process.env.SEND_CUSTOMER_CONFIRMATIONS !== "true") {
     return { mode: "skipped", reason: "customer_confirmations_disabled" };
@@ -1991,6 +2036,7 @@ async function processBooking(input) {
   }
 
   const ownerNotification = await sendOwnerNotification(lead);
+  lead = await recordOwnerNotification(lead, ownerNotification);
   const customerConfirmation = lead.status === "booked"
     ? await sendCustomerConfirmation(lead)
     : { mode: "skipped", reason: "not_booked" };
@@ -2192,6 +2238,7 @@ async function handleTwilioRecording(body = {}) {
     raw: body,
   }));
   const notification = await sendOwnerNotification(lead);
+  await recordOwnerNotification(lead, notification);
   return { ok: true, leadId: lead.id, notification };
 }
 

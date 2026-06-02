@@ -162,6 +162,9 @@ try {
   if (!fallbackLead || fallbackLead.status !== "needs_follow_up" || fallbackLead.source !== "twilio_voice_fallback") {
     throw new Error("expected Twilio fallback recording to save a follow-up lead");
   }
+  if (fallbackLead.ownerNotificationMode !== "test") {
+    throw new Error("expected fallback lead to record owner notification status");
+  }
 
   const availabilityResult = await post("/webhooks/voice", {
     message: {
@@ -238,9 +241,12 @@ try {
   if (matchingLeads[0].calendarStatus !== "live" || !matchingLeads[0].calendarLink) {
     throw new Error("expected in-hours booking to create a calendar event");
   }
+  if (matchingLeads[0].ownerNotificationMode !== "test") {
+    throw new Error("expected booking lead to record owner notification status");
+  }
 
   const leadsCsv = await fetch(`${baseUrl}/api/leads.csv?token=${leadViewerToken}`).then((res) => res.text());
-  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("Smoke Test")) {
+  if (!leadsCsv.includes("createdAt,updatedAt,status,name,phone") || !leadsCsv.includes("ownerNotificationMode") || !leadsCsv.includes("Smoke Test")) {
     throw new Error("expected protected CSV export to include saved leads");
   }
 
