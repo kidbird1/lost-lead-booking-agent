@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 const port = process.env.PORT || "3000";
 const baseUrl = `http://127.0.0.1:${port}`;
 const leadViewerToken = "smoke-token";
+const clientAToken = "smoke-client-a-token";
+const clientBToken = "smoke-client-b-token";
 const webhookSecret = "smoke-webhook-secret";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
@@ -19,6 +21,26 @@ const businessProfile = {
   services: ["drain cleaning", "leak repair", "water heater service"],
   serviceAreas: ["33487", "33485"],
 };
+const clients = [
+  {
+    businessId: "client-a-plumbing",
+    businessName: "Client A Plumbing",
+    assistantName: "Riley",
+    industry: "plumbing",
+    services: ["leak repair"],
+    serviceAreas: ["33487"],
+    leadViewerToken: clientAToken,
+  },
+  {
+    businessId: "client-b-hvac",
+    businessName: "Client B HVAC",
+    assistantName: "Casey",
+    industry: "HVAC",
+    services: ["AC repair"],
+    serviceAreas: ["33485"],
+    leadViewerToken: clientBToken,
+  },
+];
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -79,6 +101,8 @@ const server = spawn(process.execPath, ["src/server.js"], {
     PORT: port,
     NODE_ENV: "test",
     LEAD_VIEWER_TOKEN: leadViewerToken,
+    ADMIN_TOKEN: "smoke-admin-token",
+    CLIENTS_JSON: JSON.stringify(clients),
     WEBHOOK_SHARED_SECRET: webhookSecret,
     SEND_LIVE_MESSAGES: "false",
     SEND_LIVE_CALENDAR: "true",
@@ -155,14 +179,65 @@ try {
   }
 
   const previewResult = await post(`/api/profile-preview?token=${leadViewerToken}`, {
+    businessId: "bright-root-dental",
     businessName: "Bright Root Dental",
     assistantName: "Riley",
     industry: "dental office",
+    timezone: "America/New_York",
+    businessHoursStart: "09:00",
+    businessHoursEnd: "17:00",
+    ownerPhone: "+15555550129",
+    ownerWhatsApp: "+15555550130",
+    bookingLink: "https://calendly.com/bright-root/visit",
     services: "cleanings, emergency dental visits",
     serviceAreas: "33487, Boca Raton",
   });
   if (!previewResult.prompt.includes("Bright Root Dental") || !previewResult.envSnippet.includes("BUSINESS_NAME=Bright Root Dental")) {
     throw new Error("expected onboarding preview to generate profile output");
+  }
+  if (!previewResult.prompt.includes("I saved your appointment request. The team will confirm.")) {
+    throw new Error("expected onboarding prompt to use safe appointment request wording");
+  }
+  if (!previewResult.setup
+    || previewResult.setup.clientId !== "bright-root-dental"
+    || !previewResult.setup.leadViewerLink.includes("/admin/leads?token=")
+    || !previewResult.setup.vapiToolUrl.endsWith("/webhooks/voice")
+    || !previewResult.setup.ownerNotificationSetup.includes("OWNER_WHATSAPP_NUMBER=+15555550130")
+    || previewResult.setup.bookingLink !== "https://calendly.com/bright-root/visit"
+    || !previewResult.setup.liveTestChecklist.some((item) => item.includes("exactly one lead"))) {
+    throw new Error("expected onboarding preview to return complete client setup output");
+  }
+
+  const clientAContext = await fetch(`${baseUrl}/api/agent-context?token=${clientAToken}`)
+    .then((res) => res.json());
+  if (!clientAContext.ok || clientAContext.profile.businessId !== "client-a-plumbing") {
+    throw new Error("expected client token to load its own agent context");
+  }
+
+  const clientLead = await post(`/leads?token=${clientAToken}`, {
+    name: "Tenant Caller",
+    phone: "+15555550131",
+    service: "leak repair",
+    address: "33487",
+    requestedTime: "Friday at 10 AM",
+  });
+  if (!clientLead.ok || clientLead.lead.businessId !== "client-a-plumbing") {
+    throw new Error("expected client token to create a client-scoped lead");
+  }
+
+  const clientALeads = await fetch(`${baseUrl}/api/leads?token=${clientAToken}`).then((res) => res.json());
+  if (!clientALeads.leads.some((lead) => lead.id === clientLead.lead.id)) {
+    throw new Error("expected client A token to see its own lead");
+  }
+
+  const clientBLeads = await fetch(`${baseUrl}/api/leads?token=${clientBToken}`).then((res) => res.json());
+  if (clientBLeads.leads.some((lead) => lead.id === clientLead.lead.id)) {
+    throw new Error("expected client B token not to see client A lead");
+  }
+
+  const blockedClientDetail = await fetch(`${baseUrl}/api/leads/${clientLead.lead.id}?token=${clientBToken}`);
+  if (blockedClientDetail.status !== 404) {
+    throw new Error("expected client B token not to access client A lead detail");
   }
 
   const blockedWebhook = await fetch(`${baseUrl}/webhooks/voice`, {

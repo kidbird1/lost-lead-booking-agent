@@ -43,6 +43,10 @@
 - [x] Add optional webhook secret protection
 - [x] Add owner follow-up history on leads
 - [x] Add pilot readiness summary to system status
+- [x] Add complete client onboarding setup output
+- [x] Add first multi-client token isolation for pilot lead viewers
+- [x] Add basic rate limits for admin/API/webhook paths
+- [x] Add AI-native workflow and policy docs
 
 ## Phase 3 - Test
 
@@ -71,6 +75,8 @@
 - [x] Confirm protected CSV lead export includes saved leads
 - [x] Confirm protected system status page renders
 - [x] Confirm protected single-lead detail page and API render saved lead context
+- [x] Confirm onboarding preview returns client ID, lead link, Vapi tool URL, owner setup, booking link, and test checklist
+- [x] Confirm client A token cannot view client B leads in smoke test
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends

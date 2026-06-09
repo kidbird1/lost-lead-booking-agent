@@ -42,3 +42,13 @@ services:
         generateValue: true
       - key: LEADS_VIEW_KEY
         generateValue: true
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: CLIENTS_JSON
+        value: ""
+      - key: RATE_LIMIT_ADMIN_PER_MINUTE
+        value: "600"
+      - key: RATE_LIMIT_WEBHOOK_PER_MINUTE
+        value: "180"
+      - key: RATE_LIMIT_DEFAULT_PER_MINUTE
+        value: "300"

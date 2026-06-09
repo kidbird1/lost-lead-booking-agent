@@ -94,7 +94,13 @@ Requires one of these Render environment variables:
 ```text
 LEAD_VIEWER_TOKEN=
 LEADS_VIEW_KEY=
+ADMIN_TOKEN=
+CLIENTS_JSON=
 ```
+
+`ADMIN_TOKEN` can view internal operator pages across clients.
+
+`CLIENTS_JSON` can hold pilot client profiles with per-client `leadViewerToken` values. A client token only returns records for that client's `businessId`.
 
 The JSON lead list is available at:
 

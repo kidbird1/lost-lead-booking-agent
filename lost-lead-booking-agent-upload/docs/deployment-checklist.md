@@ -33,7 +33,17 @@ Start command: npm start
 DATA_DIR=/var/data
 ```
 
-5. Configure the client profile:
+5. Configure admin and client access:
+
+```text
+ADMIN_TOKEN=
+LEAD_VIEWER_TOKEN=
+CLIENTS_JSON=
+```
+
+Use `ADMIN_TOKEN` for internal operator checks. Use `CLIENTS_JSON` when one Render service serves more than one pilot client.
+
+6. Configure the client profile:
 
 ```text
 BUSINESS_NAME=
@@ -43,9 +53,9 @@ BUSINESS_SERVICES=
 BUSINESS_SERVICE_AREAS=
 ```
 
-6. For a new client, open `/admin/onboarding?token=YOUR_LEAD_VIEWER_TOKEN` and generate the profile.
-7. Open `/admin/profile?token=YOUR_LEAD_VIEWER_TOKEN` and confirm the profile looks right.
-8. Keep these off until testing:
+7. For a new client, open `/admin/onboarding?token=YOUR_ADMIN_TOKEN` and generate the profile.
+8. Open `/admin/profile?token=YOUR_ADMIN_TOKEN` and confirm the profile looks right.
+9. Keep these off until testing:
 
 ```text
 SEND_LIVE_MESSAGES=false
