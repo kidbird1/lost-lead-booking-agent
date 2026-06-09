@@ -49,3 +49,9 @@
 - Webhook protection should be optional for the pilot. If `WEBHOOK_SHARED_SECRET` or `VOICE_WEBHOOK_SECRET` is set, Vapi and Twilio fallback webhooks require the configured secret; if unset, existing live calls keep working.
 - Owner follow-up actions should leave a short status history on each lead so the business can see contacted/booked/lost changes over time instead of only the latest note.
 - The protected system status page should show a plain-English pilot readiness summary, including blockers, optional warnings, and next actions, so setup gaps are visible without reading JSON.
+
+## 2026-06-09
+
+- Client onboarding should output one copyable setup packet: client ID, private lead viewer link, Vapi first message, Vapi system prompt, Vapi tool URL, owner notification setup, optional booking link, and live test checklist.
+- Default booking language stays conservative: the agent saves appointment requests and says the team will confirm. It should not promise a confirmed calendar booking unless live calendar booking is enabled and working.
+- Paid-pilot production work should move in small slices: first add operator auth, per-client lead viewer token isolation, rate limits, and AI-native workflows while keeping the current single-client path working.

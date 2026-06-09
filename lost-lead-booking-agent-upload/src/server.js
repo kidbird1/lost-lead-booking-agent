@@ -11,6 +11,7 @@ const dataDir = process.env.DATA_DIR || new URL("../data/", import.meta.url);
 const leadsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "leads.json") : new URL("../data/leads.json", import.meta.url);
 const eventsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "events.json") : new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
+const rateLimitBuckets = new Map();
 const defaultBusinessTimezone = "America/New_York";
 const defaultBusinessName = "Demo Home Services";
 const defaultAssistantName = "Riley";
@@ -172,6 +173,12 @@ function businessProfile() {
     assistantName: configured.assistantName || process.env.ASSISTANT_NAME || defaultAssistantName,
     industry: configured.industry || process.env.BUSINESS_INDUSTRY || "home services",
     ownerName: configured.ownerName || process.env.OWNER_NAME || "",
+    ownerPhone: configured.ownerPhone || process.env.OWNER_PHONE_NUMBER || "",
+    ownerWhatsApp: configured.ownerWhatsApp || process.env.OWNER_WHATSAPP_NUMBER || "",
+    bookingLink: configured.bookingLink || process.env.BOOKING_LINK || "",
+    timezone: configured.timezone || process.env.BUSINESS_TIMEZONE || defaultBusinessTimezone,
+    businessHoursStart: configured.businessHoursStart || process.env.BUSINESS_HOURS_START || "08:00",
+    businessHoursEnd: configured.businessHoursEnd || process.env.BUSINESS_HOURS_END || "18:00",
     services: listWithFallback(configured.services || process.env.BUSINESS_SERVICES, []),
     serviceAreas: listWithFallback(configured.serviceAreas || process.env.BUSINESS_SERVICE_AREAS, []),
     intakeFields: listWithFallback(configured.intakeFields || process.env.BUSINESS_INTAKE_FIELDS, defaultIntakeFields),
@@ -195,6 +202,12 @@ function profileFromInput(input = {}) {
     assistantName: source.assistantName || defaultAssistantName,
     industry: source.industry || "home services",
     ownerName: source.ownerName || "",
+    ownerPhone: source.ownerPhone || "",
+    ownerWhatsApp: source.ownerWhatsApp || "",
+    bookingLink: source.bookingLink || "",
+    timezone: source.timezone || businessTimeZone(),
+    businessHoursStart: source.businessHoursStart || process.env.BUSINESS_HOURS_START || "08:00",
+    businessHoursEnd: source.businessHoursEnd || process.env.BUSINESS_HOURS_END || "18:00",
     services: listWithFallback(source.services, []),
     serviceAreas: listWithFallback(source.serviceAreas, []),
     intakeFields: listWithFallback(source.intakeFields, defaultIntakeFields),
@@ -213,19 +226,23 @@ function businessProfileJson(profile) {
 }
 
 function profileEnvSnippet(profile) {
-  return [
+  const lines = [
     `BUSINESS_ID=${profile.businessId || slugFromValue(profile.businessName)}`,
     `BUSINESS_NAME=${profile.businessName}`,
     `ASSISTANT_NAME=${profile.assistantName}`,
     `BUSINESS_INDUSTRY=${profile.industry}`,
     `BUSINESS_SERVICES=${profile.services.join(", ")}`,
     `BUSINESS_SERVICE_AREAS=${profile.serviceAreas.join(", ")}`,
-    `BUSINESS_TIMEZONE=${businessTimeZone()}`,
-    `BUSINESS_HOURS_START=${process.env.BUSINESS_HOURS_START || "08:00"}`,
-    `BUSINESS_HOURS_END=${process.env.BUSINESS_HOURS_END || "18:00"}`,
+    `BUSINESS_TIMEZONE=${profile.timezone || businessTimeZone()}`,
+    `BUSINESS_HOURS_START=${profile.businessHoursStart || process.env.BUSINESS_HOURS_START || "08:00"}`,
+    `BUSINESS_HOURS_END=${profile.businessHoursEnd || process.env.BUSINESS_HOURS_END || "18:00"}`,
     `DEFAULT_APPOINTMENT_MINUTES=${appointmentDurationMinutes()}`,
     `BUSINESS_PROFILE_JSON=${businessProfileJson(profile).replace(/\s+/g, " ")}`,
-  ].join("\n");
+  ];
+  if (profile.ownerPhone) lines.push(`OWNER_PHONE_NUMBER=${profile.ownerPhone}`);
+  if (profile.ownerWhatsApp) lines.push(`OWNER_WHATSAPP_NUMBER=${profile.ownerWhatsApp}`);
+  if (profile.bookingLink) lines.push(`BOOKING_LINK=${profile.bookingLink}`);
+  return lines.join("\n");
 }
 
 function publicBusinessProfile(profile = businessProfile()) {
@@ -234,6 +251,11 @@ function publicBusinessProfile(profile = businessProfile()) {
     businessName: profile.businessName,
     assistantName: profile.assistantName,
     industry: profile.industry,
+    ownerName: profile.ownerName || "",
+    bookingLink: profile.bookingLink || "",
+    timezone: profile.timezone || businessTimeZone(),
+    businessHoursStart: profile.businessHoursStart || process.env.BUSINESS_HOURS_START || "08:00",
+    businessHoursEnd: profile.businessHoursEnd || process.env.BUSINESS_HOURS_END || "18:00",
     services: profile.services,
     serviceAreas: profile.serviceAreas,
     intakeFields: profile.intakeFields,
@@ -241,6 +263,75 @@ function publicBusinessProfile(profile = businessProfile()) {
     greeting: firstMessageForProfile(profile),
     bookingRules: profile.bookingRules,
   };
+}
+
+function configuredClientProfiles() {
+  let configured = {};
+  if (process.env.CLIENTS_JSON) {
+    try {
+      configured = JSON.parse(process.env.CLIENTS_JSON);
+    } catch {
+      configured = {};
+    }
+  }
+  const rawClients = Array.isArray(configured.clients)
+    ? configured.clients
+    : Array.isArray(configured)
+      ? configured
+      : [];
+
+  return rawClients
+    .map((client) => ({
+      ...profileFromInput(client),
+      assistantId: client.assistantId || client.vapiAssistantId || "",
+      phoneNumber: client.phoneNumber || client.vapiPhoneNumber || client.twilioPhoneNumber || "",
+      leadViewerToken: client.leadViewerToken || "",
+    }))
+    .filter((client) => client.businessId);
+}
+
+function adminKey() {
+  return process.env.ADMIN_TOKEN || "";
+}
+
+function leadViewerConfigured() {
+  return Boolean(leadViewerKey() || adminKey() || configuredClientProfiles().some((client) => client.leadViewerToken));
+}
+
+function requestAccessContext(req, url) {
+  const requestKey = url.searchParams.get("token") || url.searchParams.get("key");
+  const auth = req.headers.authorization || "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+  const key = requestKey || bearer;
+
+  if (adminKey() && key === adminKey()) {
+    return { ok: true, scope: "admin", profile: businessProfile(), businessId: "" };
+  }
+
+  if (leadViewerKey() && (requestKey === leadViewerKey() || auth === `Bearer ${leadViewerKey()}`)) {
+    return { ok: true, scope: "legacy", profile: businessProfile(), businessId: "" };
+  }
+
+  const client = configuredClientProfiles().find((item) => item.leadViewerToken && item.leadViewerToken === key);
+  if (client) {
+    return { ok: true, scope: "client", profile: client, businessId: client.businessId };
+  }
+
+  return { ok: false, scope: "none", profile: businessProfile(), businessId: "" };
+}
+
+function activeProfileForRequest(req, url) {
+  return requestAccessContext(req, url).profile;
+}
+
+function filterRecordsForRequest(items, req, url) {
+  const access = requestAccessContext(req, url);
+  if (!access.businessId) return items;
+  return items.filter((item) => (item.businessId || item.raw?.businessId || "") === access.businessId);
+}
+
+function canAccessRecord(record, req, url) {
+  return filterRecordsForRequest([record], req, url).length === 1;
 }
 
 function envIsTrue(name) {
@@ -293,7 +384,7 @@ function pilotReadinessSummary(checks) {
 }
 
 function systemStatusSnapshot(req, url) {
-  const profile = businessProfile();
+  const profile = activeProfileForRequest(req, url);
   const messagingLive = envIsTrue("SEND_LIVE_MESSAGES");
   const calendarLive = envIsTrue("SEND_LIVE_CALENDAR");
   const twilioCoreReady = envIsSet("TWILIO_ACCOUNT_SID") && envIsSet("TWILIO_AUTH_TOKEN");
@@ -304,12 +395,13 @@ function systemStatusSnapshot(req, url) {
     && envIsSet("GOOGLE_CLIENT_SECRET")
     && envIsSet("GOOGLE_REFRESH_TOKEN")
     && envIsSet("GOOGLE_CALENDAR_ID");
+  const clientCount = configuredClientProfiles().length;
   const { start, end } = businessHours();
 
   const snapshot = {
     ok: true,
     service: "lost-lead-booking-agent",
-    ready: Boolean(leadViewerKey())
+    ready: leadViewerConfigured()
       && Boolean(profile.businessName && profile.assistantName)
       && (!messagingLive || (ownerReady && (smsReady || whatsappReady)))
       && (!calendarLive || googleReady),
@@ -324,8 +416,30 @@ function systemStatusSnapshot(req, url) {
       {
         key: "lead_viewer",
         label: "Lead viewer protection",
-        status: readinessStatus(envIsSet("LEAD_VIEWER_TOKEN") || envIsSet("LEADS_VIEW_KEY")),
-        detail: "Admin pages require a private token.",
+        status: readinessStatus(leadViewerConfigured()),
+        detail: "Admin and client pages require a private token.",
+      },
+      {
+        key: "admin_auth",
+        label: "Operator admin auth",
+        status: envIsSet("ADMIN_TOKEN") ? "ready" : "off",
+        detail: envIsSet("ADMIN_TOKEN")
+          ? "ADMIN_TOKEN can access internal operator pages."
+          : "Set ADMIN_TOKEN before managing many clients from one service.",
+      },
+      {
+        key: "client_routing",
+        label: "Client token routing",
+        status: clientCount ? "ready" : "off",
+        detail: clientCount
+          ? `${clientCount} client profile${clientCount === 1 ? "" : "s"} configured in CLIENTS_JSON.`
+          : "Optional for single-client pilot. Set CLIENTS_JSON for per-client viewer tokens.",
+      },
+      {
+        key: "rate_limits",
+        label: "Rate limits",
+        status: "ready",
+        detail: "Basic per-IP request limits are enabled for admin, API, and webhook paths.",
       },
       {
         key: "business_profile",
@@ -443,6 +557,8 @@ function buildVapiPrompt(profile = businessProfile()) {
     "When the caller chooses one, call bookAppointment with the chosen appointmentStartIso and appointmentEndIso.",
     "",
     "After bookAppointment succeeds, treat the appointment request as saved.",
+    "Say: \"I saved your appointment request. The team will confirm.\"",
+    "Do not promise a confirmed calendar booking unless live calendar booking is enabled and the backend confirms it.",
     "Do not say there was trouble saving unless the tool fails.",
     "If the caller says no, that's it, thank you, or goodbye, say the goodbye sentence first, then call end_call_tool.",
     "",
@@ -723,12 +839,7 @@ function leadViewerUrlSuffix(url) {
 }
 
 function isLeadViewerAuthorized(req, url) {
-  const configuredKey = leadViewerKey();
-  if (!configuredKey) return false;
-
-  const requestKey = url.searchParams.get("token") || url.searchParams.get("key");
-  const auth = req.headers.authorization || "";
-  return requestKey === configuredKey || auth === `Bearer ${configuredKey}`;
+  return requestAccessContext(req, url).ok;
 }
 
 function isWebhookAuthorized(req, url) {
@@ -741,6 +852,39 @@ function isWebhookAuthorized(req, url) {
   return requestSecret === configuredSecret
     || headerSecret === configuredSecret
     || auth === `Bearer ${configuredSecret}`;
+}
+
+function requestIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown")
+    .split(",")[0]
+    .trim();
+}
+
+function rateLimitForPath(pathname) {
+  const adminLimit = Number(process.env.RATE_LIMIT_ADMIN_PER_MINUTE || 600);
+  const webhookLimit = Number(process.env.RATE_LIMIT_WEBHOOK_PER_MINUTE || 180);
+  const defaultLimit = Number(process.env.RATE_LIMIT_DEFAULT_PER_MINUTE || 300);
+  if (pathname.startsWith("/webhooks/")) return Number.isFinite(webhookLimit) && webhookLimit > 0 ? webhookLimit : 180;
+  if (pathname.startsWith("/admin/") || pathname.startsWith("/api/") || pathname === "/leads") {
+    return Number.isFinite(adminLimit) && adminLimit > 0 ? adminLimit : 600;
+  }
+  return Number.isFinite(defaultLimit) && defaultLimit > 0 ? defaultLimit : 300;
+}
+
+function isRateLimited(req, url) {
+  const limit = rateLimitForPath(url.pathname);
+  const windowMs = 60_000;
+  const now = Date.now();
+  const key = `${requestIp(req)}:${url.pathname}`;
+  const bucket = rateLimitBuckets.get(key);
+
+  if (!bucket || now >= bucket.resetAt) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return false;
+  }
+
+  bucket.count += 1;
+  return bucket.count > limit;
 }
 
 function webhookUrlSuffix(url) {
@@ -756,6 +900,40 @@ function requestBaseUrl(req, url) {
     .split(",")[0]
     .trim();
   return `${protocol}://${host}`;
+}
+
+function onboardingSetupOutput(profile, req, url) {
+  const baseUrl = requestBaseUrl(req, url);
+  const suffix = leadViewerUrlSuffix(url);
+  const leadViewerLink = `${baseUrl}/admin/leads${suffix}`;
+  const toolUrl = `${baseUrl}/webhooks/voice`;
+  const ownerAlertLines = [
+    profile.ownerWhatsApp
+      ? `OWNER_WHATSAPP_NUMBER=${profile.ownerWhatsApp}`
+      : "OWNER_WHATSAPP_NUMBER=optional_owner_whatsapp",
+    profile.ownerPhone
+      ? `OWNER_PHONE_NUMBER=${profile.ownerPhone}`
+      : "OWNER_PHONE_NUMBER=optional_owner_sms",
+    "ENABLE_LIVE_SMS=true only when Twilio owner alerts are ready.",
+  ];
+  const checklist = [
+    "Open the private lead viewer link.",
+    "Copy the Vapi first message and system prompt into the assistant.",
+    "Set the Vapi server/tool URL to /webhooks/voice.",
+    "Place one test call.",
+    "Ask for an appointment request and confirm the agent says the team will confirm.",
+    "Confirm exactly one lead appears in the lead viewer.",
+    "Confirm the owner notification status on the lead.",
+  ];
+
+  return {
+    clientId: profile.businessId || slugFromValue(profile.businessName),
+    leadViewerLink,
+    vapiToolUrl: toolUrl,
+    ownerNotificationSetup: ownerAlertLines.join("\n"),
+    bookingLink: profile.bookingLink || "",
+    liveTestChecklist: checklist,
+  };
 }
 
 function publicLead(lead) {
@@ -1101,7 +1279,7 @@ function renderSystemStatusPage(req, url) {
 }
 
 function renderProfilePage(req, url) {
-  const profile = businessProfile();
+  const profile = activeProfileForRequest(req, url);
   const suffix = leadViewerUrlSuffix(url);
   const firstMessage = firstMessageForProfile(profile);
   const prompt = buildVapiPrompt(profile);
@@ -1239,7 +1417,7 @@ function renderProfilePage(req, url) {
 }
 
 function renderOnboardingPage(req, url) {
-  const profile = businessProfile();
+  const profile = activeProfileForRequest(req, url);
   const suffix = leadViewerUrlSuffix(url);
   const baseUrl = requestBaseUrl(req, url);
   const previewUrl = `/api/profile-preview${suffix}`;
@@ -1302,12 +1480,26 @@ function renderOnboardingPage(req, url) {
     <section class="grid">
       <form class="card" id="profile-form">
         <h2>Client Details</h2>
+        <label>Client ID</label>
+        <input name="businessId" value="${escapeHtml(profile.businessId)}">
         <label>Business name</label>
         <input name="businessName" value="${escapeHtml(profile.businessName)}">
         <label>Assistant name</label>
         <input name="assistantName" value="${escapeHtml(profile.assistantName)}">
         <label>Industry</label>
         <input name="industry" value="${escapeHtml(profile.industry)}">
+        <label>Timezone</label>
+        <input name="timezone" value="${escapeHtml(profile.timezone || businessTimeZone())}">
+        <label>Business hours start</label>
+        <input name="businessHoursStart" value="${escapeHtml(profile.businessHoursStart || process.env.BUSINESS_HOURS_START || "08:00")}">
+        <label>Business hours end</label>
+        <input name="businessHoursEnd" value="${escapeHtml(profile.businessHoursEnd || process.env.BUSINESS_HOURS_END || "18:00")}">
+        <label>Owner phone</label>
+        <input name="ownerPhone" value="${escapeHtml(profile.ownerPhone || "")}">
+        <label>Owner WhatsApp</label>
+        <input name="ownerWhatsApp" value="${escapeHtml(profile.ownerWhatsApp || "")}">
+        <label>Optional booking link</label>
+        <input name="bookingLink" value="${escapeHtml(profile.bookingLink || "")}">
         <label>Services</label>
         <textarea name="services">${escapeHtml(profile.services.join(", "))}</textarea>
         <label>Service areas</label>
@@ -1322,6 +1514,16 @@ function renderOnboardingPage(req, url) {
 
       <section class="outputs">
         <article class="card">
+          <h2>Client ID</h2>
+          <input id="client-id" readonly>
+          <div class="actions"><button type="button" data-copy-target="client-id">Copy Client ID</button></div>
+        </article>
+        <article class="card">
+          <h2>Private Lead Viewer Link</h2>
+          <input id="lead-viewer-link" readonly>
+          <div class="actions"><button type="button" data-copy-target="lead-viewer-link">Copy Lead Link</button></div>
+        </article>
+        <article class="card">
           <h2>First Message</h2>
           <textarea class="mono" id="first-message" readonly></textarea>
           <div class="actions"><button type="button" data-copy-target="first-message">Copy First Message</button></div>
@@ -1330,6 +1532,26 @@ function renderOnboardingPage(req, url) {
           <h2>Vapi Prompt</h2>
           <textarea class="mono" id="prompt" readonly></textarea>
           <div class="actions"><button type="button" data-copy-target="prompt">Copy Prompt</button></div>
+        </article>
+        <article class="card">
+          <h2>Vapi Tool URL</h2>
+          <input id="vapi-tool-url" readonly>
+          <div class="actions"><button type="button" data-copy-target="vapi-tool-url">Copy Tool URL</button></div>
+        </article>
+        <article class="card">
+          <h2>Owner Notification Setup</h2>
+          <textarea class="mono" id="owner-notification-setup" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="owner-notification-setup">Copy Owner Setup</button></div>
+        </article>
+        <article class="card">
+          <h2>Optional Booking Link</h2>
+          <input id="booking-link" readonly>
+          <div class="actions"><button type="button" data-copy-target="booking-link">Copy Booking Link</button></div>
+        </article>
+        <article class="card">
+          <h2>Live Test Checklist</h2>
+          <textarea class="mono" id="live-test-checklist" readonly></textarea>
+          <div class="actions"><button type="button" data-copy-target="live-test-checklist">Copy Checklist</button></div>
         </article>
         <article class="card">
           <h2>Render Env</h2>
@@ -1356,8 +1578,14 @@ function renderOnboardingPage(req, url) {
         status.textContent = data.error || "Could not generate.";
         return;
       }
+      document.getElementById("client-id").value = data.setup?.clientId || data.profile?.businessId || "";
+      document.getElementById("lead-viewer-link").value = data.setup?.leadViewerLink || "";
       document.getElementById("first-message").value = data.firstMessage || "";
       document.getElementById("prompt").value = data.prompt || "";
+      document.getElementById("vapi-tool-url").value = data.setup?.vapiToolUrl || "";
+      document.getElementById("owner-notification-setup").value = data.setup?.ownerNotificationSetup || "";
+      document.getElementById("booking-link").value = data.setup?.bookingLink || "";
+      document.getElementById("live-test-checklist").value = (data.setup?.liveTestChecklist || []).map((item, index) => String(index + 1) + ". " + item).join("\\n");
       document.getElementById("env").value = data.envSnippet || "";
       status.textContent = "Ready.";
     }
@@ -1377,8 +1605,8 @@ function renderOnboardingPage(req, url) {
 </html>`;
 }
 
-function renderLeadsPage(leads, url) {
-  const profile = businessProfile();
+function renderLeadsPage(leads, url, req) {
+  const profile = req ? activeProfileForRequest(req, url) : businessProfile();
   const visibleLeads = leads
     .map(publicLead)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -1565,8 +1793,8 @@ function renderLeadsPage(leads, url) {
 </html>`;
 }
 
-function renderLeadDetailPage(lead, url) {
-  const profile = businessProfile();
+function renderLeadDetailPage(lead, url, req) {
+  const profile = req ? activeProfileForRequest(req, url) : businessProfile();
   const suffix = leadViewerUrlSuffix(url);
   const publicItem = publicLead(lead);
   const time = publicItem.bookedTime || publicItem.requestedTime || "Needs follow-up";
@@ -1720,8 +1948,8 @@ function renderLeadDetailPage(lead, url) {
 </html>`;
 }
 
-function renderEventsPage(events, url) {
-  const profile = businessProfile();
+function renderEventsPage(events, url, req) {
+  const profile = req ? activeProfileForRequest(req, url) : businessProfile();
   const suffix = leadViewerUrlSuffix(url);
   const rows = events
     .map(publicEvent)
@@ -1827,18 +2055,20 @@ async function notifyOwnerForLead(id) {
   };
 }
 
-async function buildProtectedBackup() {
+async function buildProtectedBackup(req, url) {
   const [leads, events] = await Promise.all([
     readJsonFile(leadsFile),
     readJsonFile(eventsFile),
   ]);
+  const visibleLeads = req && url ? filterRecordsForRequest(leads, req, url) : leads;
+  const visibleEvents = req && url ? filterRecordsForRequest(events, req, url) : events;
 
   return {
     ok: true,
     exportedAt: new Date().toISOString(),
-    profile: publicBusinessProfile(businessProfile()),
-    leads: leads.map(publicLead),
-    events: events.map(publicEvent),
+    profile: publicBusinessProfile(req && url ? activeProfileForRequest(req, url) : businessProfile()),
+    leads: visibleLeads.map(publicLead),
+    events: visibleEvents.map(publicEvent),
   };
 }
 
@@ -2749,13 +2979,16 @@ function html(res, status, body) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    if (isRateLimited(req, url)) {
+      return json(res, 429, { ok: false, error: "rate_limited" });
+    }
 
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { ok: true, service: "lost-lead-booking-agent" });
     }
 
     if (req.method === "GET" && (url.pathname === "/profile" || url.pathname === "/admin/profile")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return html(res, 503, renderLeadViewerDisabled());
       }
 
@@ -2767,7 +3000,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && (url.pathname === "/onboarding" || url.pathname === "/admin/onboarding")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return html(res, 503, renderLeadViewerDisabled());
       }
 
@@ -2779,7 +3012,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && (url.pathname === "/status" || url.pathname === "/admin/status")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return html(res, 503, renderLeadViewerDisabled());
       }
 
@@ -2791,7 +3024,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return html(res, 503, renderLeadViewerDisabled());
       }
 
@@ -2799,12 +3032,12 @@ const server = http.createServer(async (req, res) => {
         return html(res, 401, renderUnauthorizedLeadViewer());
       }
 
-      const leads = await readJsonFile(leadsFile);
-      return html(res, 200, renderLeadsPage(leads, url));
+      const leads = filterRecordsForRequest(await readJsonFile(leadsFile), req, url);
+      return html(res, 200, renderLeadsPage(leads, url, req));
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/admin/leads/")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return html(res, 503, renderLeadViewerDisabled());
       }
 
@@ -2815,12 +3048,13 @@ const server = http.createServer(async (req, res) => {
       const id = decodeURIComponent(url.pathname.replace("/admin/leads/", ""));
       const lead = await findLeadById(id);
       if (!lead) return html(res, 404, renderNotFoundLeadViewer());
+      if (!canAccessRecord(lead, req, url)) return html(res, 404, renderNotFoundLeadViewer());
 
-      return html(res, 200, renderLeadDetailPage(lead, url));
+      return html(res, 200, renderLeadDetailPage(lead, url, req));
     }
 
     if (req.method === "GET" && (url.pathname === "/events" || url.pathname === "/admin/events")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return html(res, 503, renderLeadViewerDisabled());
       }
 
@@ -2828,12 +3062,12 @@ const server = http.createServer(async (req, res) => {
         return html(res, 401, renderUnauthorizedLeadViewer());
       }
 
-      const events = await readJsonFile(eventsFile);
-      return html(res, 200, renderEventsPage(events, url));
+      const events = filterRecordsForRequest(await readJsonFile(eventsFile), req, url);
+      return html(res, 200, renderEventsPage(events, url, req));
     }
 
     if (req.method === "GET" && url.pathname === "/api/leads") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2841,12 +3075,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const leads = await readJsonFile(leadsFile);
+      const leads = filterRecordsForRequest(await readJsonFile(leadsFile), req, url);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
     }
 
     if (req.method === "GET" && url.pathname.startsWith("/api/leads/")) {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2857,12 +3091,13 @@ const server = http.createServer(async (req, res) => {
       const id = decodeURIComponent(url.pathname.replace("/api/leads/", ""));
       const lead = await findLeadById(id);
       if (!lead) return json(res, 404, { ok: false, error: "lead_not_found" });
+      if (!canAccessRecord(lead, req, url)) return json(res, 404, { ok: false, error: "lead_not_found" });
 
       return json(res, 200, { ok: true, lead: publicLead(lead) });
     }
 
     if (req.method === "GET" && url.pathname === "/api/events") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2870,7 +3105,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const events = await readJsonFile(eventsFile);
+      const events = filterRecordsForRequest(await readJsonFile(eventsFile), req, url);
       return json(res, 200, {
         ok: true,
         events: events
@@ -2881,7 +3116,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/backup.json") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2889,11 +3124,11 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      return json(res, 200, await buildProtectedBackup());
+      return json(res, 200, await buildProtectedBackup(req, url));
     }
 
     if (req.method === "GET" && url.pathname === "/api/leads.csv") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2901,12 +3136,12 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const leads = await readJsonFile(leadsFile);
+      const leads = filterRecordsForRequest(await readJsonFile(leadsFile), req, url);
       return csv(res, "leads.csv", leadsCsv(leads));
     }
 
     if (req.method === "GET" && url.pathname === "/api/agent-context") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2914,7 +3149,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const profile = businessProfile();
+      const profile = activeProfileForRequest(req, url);
       return json(res, 200, {
         ok: true,
         profile: publicBusinessProfile(profile),
@@ -2924,7 +3159,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/system-status") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2936,7 +3171,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/profile-preview") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2952,11 +3187,12 @@ const server = http.createServer(async (req, res) => {
         prompt: buildVapiPrompt(profile),
         envSnippet: profileEnvSnippet(profile),
         businessProfileJson: businessProfileJson(profile),
+        setup: onboardingSetupOutput(profile, req, url),
       });
     }
 
     if (req.method === "GET" && url.pathname === "/api/availability") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2969,7 +3205,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/api/availability") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2983,7 +3219,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/leads/status") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -2992,12 +3228,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readJson(req);
+      const lead = await findLeadById(body.id);
+      if (!lead || !canAccessRecord(lead, req, url)) {
+        return json(res, 404, { ok: false, error: "lead_not_found" });
+      }
       const result = await updateLeadStatus(body);
       return json(res, result.ok ? 200 : 400, result);
     }
 
     if (req.method === "POST" && url.pathname === "/leads/notify-owner") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
       }
 
@@ -3006,12 +3246,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readJson(req);
+      const lead = await findLeadById(body.id);
+      if (!lead || !canAccessRecord(lead, req, url)) {
+        return json(res, 404, { ok: false, error: "lead_not_found" });
+      }
       const result = await notifyOwnerForLead(body.id);
       return json(res, result.ok ? 200 : 400, result);
     }
 
     if (req.method === "POST" && url.pathname === "/leads") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "manual_leads_disabled" });
       }
 
@@ -3020,7 +3264,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readJson(req);
-      const processed = await processBooking({ ...body, source: "manual" });
+      const access = requestAccessContext(req, url);
+      const processed = await processBooking({ ...body, businessId: access.businessId || body.businessId, source: "manual" });
       return json(res, 201, { ok: true, ...processed });
     }
 
@@ -3056,7 +3301,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/bookings") {
-      if (!leadViewerKey()) {
+      if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "manual_bookings_disabled" });
       }
 
@@ -3065,7 +3310,8 @@ const server = http.createServer(async (req, res) => {
       }
 
       const body = await readJson(req);
-      const processed = await processBooking({ ...body, status: "booked", source: "booking_api" });
+      const access = requestAccessContext(req, url);
+      const processed = await processBooking({ ...body, businessId: access.businessId || body.businessId, status: "booked", source: "booking_api" });
       return json(res, 201, { ok: true, ...processed });
     }
 
