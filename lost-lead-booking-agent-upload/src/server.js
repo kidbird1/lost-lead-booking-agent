@@ -961,6 +961,8 @@ function publicLead(lead) {
     calendarStatus: lead.calendarStatus || "",
     calendarEventId: lead.calendarEventId || "",
     calendarLink: lead.calendarLink || "",
+    calendarError: lead.calendarError || "",
+    calendarErrorDetail: lead.calendarErrorDetail || "",
     ownerNotificationMode: lead.ownerNotificationMode || "",
     ownerNotificationChannel: lead.ownerNotificationChannel || "",
     ownerNotificationStatus: lead.ownerNotificationStatus || "",
@@ -2517,6 +2519,14 @@ function calendarBlocksBooking(calendar) {
   return calendar.mode === "needs_review" || calendar.mode === "error";
 }
 
+function calendarErrorDetail(calendar = {}) {
+  return calendar.payload?.error?.message
+    || calendar.payload?.error_description
+    || calendar.payload?.error
+    || calendar.error
+    || "";
+}
+
 async function createCalendarBooking(lead) {
   if (lead.status !== "booked") {
     return { mode: "skipped", reason: "not_booked" };
@@ -2579,8 +2589,8 @@ async function createCalendarBooking(lead) {
       `Scheduling: ${lead.scheduleNote || lead.scheduleStatus || "Unknown"}`,
       `Summary: ${lead.summary || ""}`,
     ].join("\n"),
-    start: { dateTime: startIso },
-    end: { dateTime: endIso },
+    start: { dateTime: startIso, timeZone: lead.businessTimezone || businessTimeZone() },
+    end: { dateTime: endIso, timeZone: lead.businessTimezone || businessTimeZone() },
   };
 
   const createResponse = await fetch(
@@ -2744,6 +2754,7 @@ async function processBooking(input) {
       scheduleNote: scheduleReasonLabel(scheduleReason),
       calendarStatus: calendar.mode,
       calendarError: calendar.error || "",
+      calendarErrorDetail: calendarErrorDetail(calendar),
     }) || lead;
   }
 
