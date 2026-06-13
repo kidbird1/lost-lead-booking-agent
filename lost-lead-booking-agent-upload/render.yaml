@@ -8,6 +8,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DATABASE_URL
+        value: ""
+      - key: DATABASE_SSL
+        value: "true"
       - key: SEND_LIVE_MESSAGES
         value: "false"
       - key: SEND_LIVE_CALENDAR

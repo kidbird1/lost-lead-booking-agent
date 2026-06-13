@@ -47,6 +47,7 @@
 - [x] Add first multi-client token isolation for pilot lead viewers
 - [x] Add basic rate limits for admin/API/webhook paths
 - [x] Add AI-native workflow and policy docs
+- [x] Add Postgres storage foundation with JSON fallback
 
 ## Phase 3 - Test
 
@@ -77,6 +78,7 @@
 - [x] Confirm protected single-lead detail page and API render saved lead context
 - [x] Confirm onboarding preview returns client ID, lead link, Vapi tool URL, owner setup, booking link, and test checklist
 - [x] Confirm client A token cannot view client B leads in smoke test
+- [x] Confirm Postgres smoke script skips safely without DATABASE_URL
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends
