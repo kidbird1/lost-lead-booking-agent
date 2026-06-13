@@ -55,3 +55,4 @@
 - Client onboarding should output one copyable setup packet: client ID, private lead viewer link, Vapi first message, Vapi system prompt, Vapi tool URL, owner notification setup, optional booking link, and live test checklist.
 - Default booking language stays conservative: the agent saves appointment requests and says the team will confirm. It should not promise a confirmed calendar booking unless live calendar booking is enabled and working.
 - Paid-pilot production work should move in small slices: first add operator auth, per-client lead viewer token isolation, rate limits, and AI-native workflows while keeping the current single-client path working.
+- Storage direction: use Postgres for paid pilots and multi-tenant Agent-as-a-Service. Keep JSON as local/demo fallback only; do not use SQLite or hardcoded client data for production.

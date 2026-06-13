@@ -27,7 +27,14 @@ Start command: npm start
 ```
 
 4. Add env vars from `.env.example`.
-   For real pilot data, mount a Render persistent disk and set:
+   For paid pilot data, create a Render Postgres database and set:
+
+```text
+DATABASE_URL=postgres://...
+DATABASE_SSL=true
+```
+
+   For a simpler demo without Postgres, mount a Render persistent disk and set:
 
 ```text
 DATA_DIR=/var/data

@@ -7,13 +7,15 @@
     "start": "node src/server.js",
     "dev": "node src/server.js",
     "check": "node --check src/server.js",
-    "smoke": "node scripts/smoke-test.mjs"
+    "smoke": "node scripts/smoke-test.mjs",
+    "smoke:db": "node scripts/postgres-smoke-test.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "chrono-node": "^2.9.1",
-    "luxon": "^3.7.2"
+    "luxon": "^3.7.2",
+    "pg": "^8.21.0"
   }
 }

@@ -177,7 +177,15 @@ No real messages or calendar bookings are sent in test mode.
 
 By default, leads are saved in the app `data` folder for the MVP.
 
-For a more durable Render setup, mount a persistent disk and set:
+For paid pilots, use Render Postgres and set:
+
+```text
+DATABASE_URL=
+```
+
+When `DATABASE_URL` is set, leads and events are stored in Postgres tables. JSON export stays available as a protected backup path.
+
+For a simpler durable demo setup, mount a persistent disk and set:
 
 ```text
 DATA_DIR=/var/data

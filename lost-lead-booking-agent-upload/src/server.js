@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as chrono from "chrono-node";
 import { DateTime } from "luxon";
+import pg from "pg";
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || new URL("../data/", import.meta.url);
@@ -12,6 +13,9 @@ const leadsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "leads.json"
 const eventsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "events.json") : new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
 const rateLimitBuckets = new Map();
+const { Pool } = pg;
+let dbPool;
+let dbReadyPromise;
 const defaultBusinessTimezone = "America/New_York";
 const defaultBusinessName = "Demo Home Services";
 const defaultAssistantName = "Riley";
@@ -38,6 +42,88 @@ async function ensureStore() {
   if (!existsSync(eventsFile)) {
     await writeFile(eventsFile, "[]\n");
   }
+  if (postgresEnabled()) {
+    await ensureDatabase();
+  }
+}
+
+function postgresEnabled() {
+  return Boolean(String(process.env.DATABASE_URL || "").trim());
+}
+
+function databasePool() {
+  if (!postgresEnabled()) return null;
+  if (!dbPool) {
+    dbPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_SSL === "false" ? false : { rejectUnauthorized: false },
+    });
+  }
+  return dbPool;
+}
+
+async function ensureDatabase() {
+  if (dbReadyPromise) return dbReadyPromise;
+  const pool = databasePool();
+  if (!pool) return null;
+
+  dbReadyPromise = pool.query(`
+    create table if not exists clients (
+      id text primary key,
+      business_name text not null default '',
+      lead_viewer_token_hash text,
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      data jsonb not null default '{}'::jsonb
+    );
+
+    create table if not exists leads (
+      id uuid primary key,
+      business_id text not null,
+      call_id text,
+      status text not null default 'new',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      data jsonb not null default '{}'::jsonb
+    );
+
+    create index if not exists leads_business_id_created_at_idx on leads (business_id, created_at desc);
+    create index if not exists leads_call_id_idx on leads (call_id);
+
+    create table if not exists events (
+      id uuid primary key,
+      business_id text not null,
+      provider text,
+      type text,
+      call_id text,
+      created_at timestamptz not null default now(),
+      data jsonb not null default '{}'::jsonb
+    );
+
+    create index if not exists events_business_id_created_at_idx on events (business_id, created_at desc);
+    create index if not exists events_call_id_idx on events (call_id);
+
+    create table if not exists owner_notifications (
+      id uuid primary key,
+      lead_id uuid,
+      business_id text not null,
+      channel text,
+      status text,
+      created_at timestamptz not null default now(),
+      data jsonb not null default '{}'::jsonb
+    );
+
+    create table if not exists integrations (
+      id uuid primary key,
+      business_id text not null,
+      provider text not null,
+      status text not null default 'configured',
+      created_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      data jsonb not null default '{}'::jsonb
+    );
+  `);
+  return dbReadyPromise;
 }
 
 async function readJson(req) {
@@ -104,6 +190,58 @@ async function enqueueJsonWrite(fileUrl, task) {
     if (fileWriteQueues.get(key) === next) fileWriteQueues.delete(key);
   }));
   return next;
+}
+
+async function readLeads() {
+  if (!postgresEnabled()) return readJsonFile(leadsFile);
+  await ensureDatabase();
+  const result = await databasePool().query("select data from leads order by created_at asc");
+  return result.rows.map((row) => row.data);
+}
+
+async function readEvents() {
+  if (!postgresEnabled()) return readJsonFile(eventsFile);
+  await ensureDatabase();
+  const result = await databasePool().query("select data from events order by created_at asc");
+  return result.rows.map((row) => row.data);
+}
+
+async function insertLead(lead) {
+  if (!postgresEnabled()) return appendJson(leadsFile, lead);
+  await ensureDatabase();
+  await databasePool().query(
+    `insert into leads (id, business_id, call_id, status, created_at, updated_at, data)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+    [
+      lead.id,
+      lead.businessId || "",
+      lead.callId || "",
+      lead.status || "new",
+      lead.createdAt || new Date().toISOString(),
+      lead.updatedAt || lead.createdAt || new Date().toISOString(),
+      JSON.stringify(lead),
+    ],
+  );
+  return lead;
+}
+
+async function insertEvent(event) {
+  if (!postgresEnabled()) return appendJson(eventsFile, event);
+  await ensureDatabase();
+  await databasePool().query(
+    `insert into events (id, business_id, provider, type, call_id, created_at, data)
+     values ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+    [
+      event.id,
+      event.businessId || "",
+      event.provider || "",
+      event.type || "",
+      event.callId || event.raw?.message?.call?.id || "",
+      event.createdAt || new Date().toISOString(),
+      JSON.stringify(event),
+    ],
+  );
+  return event;
 }
 
 function escapeHtml(value = "") {
@@ -449,11 +587,13 @@ function systemStatusSnapshot(req, url) {
       },
       {
         key: "data_storage",
-        label: "Lead storage path",
-        status: envIsSet("DATA_DIR") ? "ready" : "off",
-        detail: envIsSet("DATA_DIR")
-          ? "DATA_DIR is set for an external data path."
-          : "Using the app data folder. Set DATA_DIR when adding a persistent disk.",
+        label: "Lead storage",
+        status: postgresEnabled() || envIsSet("DATA_DIR") ? "ready" : "off",
+        detail: postgresEnabled()
+          ? "DATABASE_URL is set. Leads and events use Postgres."
+          : envIsSet("DATA_DIR")
+            ? "DATA_DIR is set for an external JSON data path."
+            : "Using the app data folder. Set DATABASE_URL before multi-client production.",
       },
       {
         key: "vapi_webhook",
@@ -2018,30 +2158,24 @@ async function updateLeadStatus({ id, status, note }) {
     return { ok: false, error: "invalid_lead_status_update" };
   }
 
-  return enqueueJsonWrite(leadsFile, async () => {
-    const leads = await readJsonFile(leadsFile);
-    const index = leads.findIndex((lead) => lead.id === id);
-    if (index === -1) return { ok: false, error: "lead_not_found" };
+  const lead = await findLeadById(id);
+  if (!lead) return { ok: false, error: "lead_not_found" };
 
-    const trimmedNote = String(note || "").trim();
-    const history = Array.isArray(leads[index].followUpHistory) ? leads[index].followUpHistory : [];
-    const historyItem = {
-      at: new Date().toISOString(),
-      status,
-      note: trimmedNote,
-    };
+  const trimmedNote = String(note || "").trim();
+  const history = Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [];
+  const historyItem = {
+    at: new Date().toISOString(),
+    status,
+    note: trimmedNote,
+  };
 
-    leads[index] = {
-      ...leads[index],
-      status,
-      followUpNote: trimmedNote || leads[index].followUpNote || "",
-      followUpHistory: [historyItem, ...history].slice(0, 50),
-      updatedAt: new Date().toISOString(),
-    };
-
-    await writeJsonFile(leadsFile, leads);
-    return { ok: true, lead: publicLead(leads[index]) };
+  const updated = await updateStoredLead(id, {
+    status,
+    followUpNote: trimmedNote || lead.followUpNote || "",
+    followUpHistory: [historyItem, ...history].slice(0, 50),
   });
+
+  return { ok: true, lead: publicLead(updated) };
 }
 
 async function notifyOwnerForLead(id) {
@@ -2059,8 +2193,8 @@ async function notifyOwnerForLead(id) {
 
 async function buildProtectedBackup(req, url) {
   const [leads, events] = await Promise.all([
-    readJsonFile(leadsFile),
-    readJsonFile(eventsFile),
+    readLeads(),
+    readEvents(),
   ]);
   const visibleLeads = req && url ? filterRecordsForRequest(leads, req, url) : leads;
   const visibleEvents = req && url ? filterRecordsForRequest(events, req, url) : events;
@@ -2075,8 +2209,33 @@ async function buildProtectedBackup(req, url) {
 }
 
 async function updateStoredLead(id, updates) {
+  if (postgresEnabled()) {
+    const current = await findLeadById(id);
+    if (!current) return null;
+    const next = {
+      ...current,
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+    await ensureDatabase();
+    await databasePool().query(
+      `update leads
+       set business_id = $2, call_id = $3, status = $4, updated_at = $5, data = $6::jsonb
+       where id = $1`,
+      [
+        id,
+        next.businessId || "",
+        next.callId || "",
+        next.status || "new",
+        next.updatedAt,
+        JSON.stringify(next),
+      ],
+    );
+    return next;
+  }
+
   return enqueueJsonWrite(leadsFile, async () => {
-    const leads = await readJsonFile(leadsFile);
+    const leads = await readLeads();
     const index = leads.findIndex((lead) => lead.id === id);
     if (index === -1) return null;
 
@@ -2135,13 +2294,13 @@ function vapiCallId(message = {}) {
 
 async function findLeadByCallId(callId) {
   if (!callId) return null;
-  const leads = await readJsonFile(leadsFile);
+  const leads = await readLeads();
   return leads.find((lead) => lead.callId === callId) || null;
 }
 
 async function findLeadById(id) {
   if (!id) return null;
-  const leads = await readJsonFile(leadsFile);
+  const leads = await readLeads();
   return leads.find((lead) => lead.id === id) || null;
 }
 
@@ -2177,12 +2336,12 @@ async function saveLead(input) {
     summary: input.summary || "",
     raw: input,
   };
-  return appendJson(leadsFile, lead);
+  return insertLead(lead);
 }
 
 async function saveEvent(input) {
   const profile = businessProfile();
-  return appendJson(eventsFile, {
+  return insertEvent({
     id: randomUUID(),
     businessId: input.businessId || profile.businessId,
     createdAt: new Date().toISOString(),
@@ -3043,7 +3202,7 @@ const server = http.createServer(async (req, res) => {
         return html(res, 401, renderUnauthorizedLeadViewer());
       }
 
-      const leads = filterRecordsForRequest(await readJsonFile(leadsFile), req, url);
+      const leads = filterRecordsForRequest(await readLeads(), req, url);
       return html(res, 200, renderLeadsPage(leads, url, req));
     }
 
@@ -3073,7 +3232,7 @@ const server = http.createServer(async (req, res) => {
         return html(res, 401, renderUnauthorizedLeadViewer());
       }
 
-      const events = filterRecordsForRequest(await readJsonFile(eventsFile), req, url);
+      const events = filterRecordsForRequest(await readEvents(), req, url);
       return html(res, 200, renderEventsPage(events, url, req));
     }
 
@@ -3086,7 +3245,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const leads = filterRecordsForRequest(await readJsonFile(leadsFile), req, url);
+      const leads = filterRecordsForRequest(await readLeads(), req, url);
       return json(res, 200, { ok: true, leads: leads.map(publicLead) });
     }
 
@@ -3116,7 +3275,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const events = filterRecordsForRequest(await readJsonFile(eventsFile), req, url);
+      const events = filterRecordsForRequest(await readEvents(), req, url);
       return json(res, 200, {
         ok: true,
         events: events
@@ -3147,7 +3306,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      const leads = filterRecordsForRequest(await readJsonFile(leadsFile), req, url);
+      const leads = filterRecordsForRequest(await readLeads(), req, url);
       return csv(res, "leads.csv", leadsCsv(leads));
     }
 
