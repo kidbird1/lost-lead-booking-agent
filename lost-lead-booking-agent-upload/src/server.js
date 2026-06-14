@@ -1,7 +1,7 @@
 import http from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import * as chrono from "chrono-node";
 import { DateTime } from "luxon";
@@ -428,15 +428,104 @@ function configuredClientProfiles() {
     .filter((client) => client.businessId);
 }
 
+function generatePrivateToken() {
+  return randomBytes(24).toString("hex");
+}
+
+function privateTokenHash(value) {
+  return createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function storedClientData(profile, input = {}) {
+  return {
+    ...publicBusinessProfile(profile),
+    ownerPhone: profile.ownerPhone || "",
+    ownerWhatsApp: profile.ownerWhatsApp || "",
+    assistantId: input.assistantId || input.vapiAssistantId || "",
+    phoneNumber: input.phoneNumber || input.vapiPhoneNumber || input.twilioPhoneNumber || "",
+  };
+}
+
+async function listStoredClients() {
+  if (!postgresEnabled()) return [];
+  await ensureDatabase();
+  const result = await databasePool().query(
+    "select id, business_name, created_at, updated_at, data from clients order by updated_at desc"
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    businessName: row.business_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    profile: row.data || {},
+  }));
+}
+
+async function saveStoredClient(input = {}) {
+  if (!postgresEnabled()) {
+    return { ok: false, error: "database_not_configured" };
+  }
+
+  const profile = profileFromInput(input);
+  const leadViewerToken = String(input.leadViewerToken || "").trim() || generatePrivateToken();
+  const data = storedClientData(profile, input);
+  await ensureDatabase();
+  await databasePool().query(
+    `insert into clients (id, business_name, lead_viewer_token_hash, data, updated_at)
+     values ($1, $2, $3, $4::jsonb, now())
+     on conflict (id) do update
+       set business_name = excluded.business_name,
+           lead_viewer_token_hash = excluded.lead_viewer_token_hash,
+           data = excluded.data,
+           updated_at = now()`,
+    [
+      profile.businessId,
+      profile.businessName,
+      privateTokenHash(leadViewerToken),
+      JSON.stringify(data),
+    ]
+  );
+
+  return {
+    ok: true,
+    profile,
+    publicProfile: publicBusinessProfile(profile),
+    leadViewerToken,
+  };
+}
+
+async function storedClientFromToken(key) {
+  if (!key || !postgresEnabled()) return null;
+  await ensureDatabase();
+  const result = await databasePool().query(
+    "select id, business_name, data from clients where lead_viewer_token_hash = $1 limit 1",
+    [privateTokenHash(key)]
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const profile = {
+    ...profileFromInput(row.data || {}),
+    businessId: row.id,
+    businessName: row.business_name || row.data?.businessName || defaultBusinessName,
+  };
+  return {
+    ...profile,
+    leadViewerToken: "",
+    assistantId: row.data?.assistantId || "",
+    phoneNumber: row.data?.phoneNumber || "",
+  };
+}
+
 function adminKey() {
   return process.env.ADMIN_TOKEN || "";
 }
 
 function leadViewerConfigured() {
-  return Boolean(leadViewerKey() || adminKey() || configuredClientProfiles().some((client) => client.leadViewerToken));
+  return Boolean(leadViewerKey() || adminKey() || postgresEnabled() || configuredClientProfiles().some((client) => client.leadViewerToken));
 }
 
 function requestAccessContext(req, url) {
+  if (req.accessContext) return req.accessContext;
   const requestKey = url.searchParams.get("token") || url.searchParams.get("key");
   const auth = req.headers.authorization || "";
   const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
@@ -456,6 +545,22 @@ function requestAccessContext(req, url) {
   }
 
   return { ok: false, scope: "none", profile: businessProfile(), businessId: "" };
+}
+
+async function requestAccessContextAsync(req, url) {
+  const current = requestAccessContext(req, url);
+  if (current.ok) return current;
+
+  const requestKey = url.searchParams.get("token") || url.searchParams.get("key");
+  const auth = req.headers.authorization || "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+  const key = requestKey || bearer;
+  const client = await storedClientFromToken(key);
+  if (client) {
+    return { ok: true, scope: "client", profile: client, businessId: client.businessId };
+  }
+
+  return current;
 }
 
 function activeProfileForRequest(req, url) {
@@ -1379,6 +1484,7 @@ function renderSystemStatusPage(req, url) {
       </div>
       <nav class="links" aria-label="Admin links">
         <a href="/admin/leads${escapeHtml(suffix)}">Leads</a>
+        <a href="/admin/clients${escapeHtml(suffix)}">Clients</a>
         <a href="/admin/profile${escapeHtml(suffix)}">Setup</a>
         <a href="/api/system-status${escapeHtml(suffix)}">JSON</a>
       </nav>
@@ -1420,6 +1526,107 @@ function renderSystemStatusPage(req, url) {
 </html>`;
 }
 
+function renderClientsPage(clients, storage, req, url) {
+  const suffix = leadViewerUrlSuffix(url);
+  const baseUrl = requestBaseUrl(req, url);
+  const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
+  const statusUrl = `${baseUrl}/admin/status${suffix}`;
+  const apiUrl = `${baseUrl}/api/clients${suffix}`;
+  const rows = clients.length
+    ? clients.map((client) => {
+        const profile = client.profile || {};
+        const services = Array.isArray(profile.services) && profile.services.length
+          ? profile.services.join(", ")
+          : "Not set";
+        const areas = Array.isArray(profile.serviceAreas) && profile.serviceAreas.length
+          ? profile.serviceAreas.join(", ")
+          : "Not set";
+        const ownerAlert = profile.ownerWhatsApp || profile.ownerPhone
+          ? "Configured"
+          : "Missing";
+        return `<article class="client">
+          <div>
+            <p class="eyebrow">${escapeHtml(client.id || profile.businessId || "")}</p>
+            <h2>${escapeHtml(client.businessName || profile.businessName || "Unnamed client")}</h2>
+            <p>${escapeHtml(profile.industry || "home services")}</p>
+          </div>
+          <dl>
+            <div><dt>Services</dt><dd>${escapeHtml(services)}</dd></div>
+            <div><dt>Service Area</dt><dd>${escapeHtml(areas)}</dd></div>
+            <div><dt>Owner Alert</dt><dd>${escapeHtml(ownerAlert)}</dd></div>
+            <div><dt>Updated</dt><dd>${escapeHtml(client.updatedAt ? formatDate(client.updatedAt) : "Not stored")}</dd></div>
+          </dl>
+        </article>`;
+      }).join("")
+    : `<article class="empty">
+        <h2>No clients saved yet</h2>
+        <p>Use onboarding to create the first tenant profile.</p>
+      </article>`;
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clients</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+      --soft: #f4f0e7;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    main { max-width: 1060px; margin: 0 auto; padding: 28px 22px 46px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0; font-size: 20px; }
+    p { margin: 8px 0 0; color: var(--muted); line-height: 1.45; }
+    a { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); text-decoration: none; }
+    dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0 0; }
+    dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+    dd { margin: 0; overflow-wrap: anywhere; }
+    .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 18px; }
+    .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .summary { border: 1px solid var(--line); border-radius: 8px; background: var(--soft); padding: 14px; margin-bottom: 14px; }
+    .list { display: grid; gap: 12px; }
+    .client, .empty { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .eyebrow { margin: 0 0 4px; font-size: 12px; letter-spacing: 0; text-transform: uppercase; }
+    @media (max-width: 760px) {
+      .top { display: block; }
+      .links { justify-content: start; margin-top: 14px; }
+      dl { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="top">
+      <div>
+        <h1>Clients</h1>
+        <p>Operator view for tenant setup.</p>
+      </div>
+      <nav class="links" aria-label="Admin links">
+        <a href="${escapeHtml(onboardingUrl)}">New Client</a>
+        <a href="${escapeHtml(statusUrl)}">System Status</a>
+        <a href="${escapeHtml(apiUrl)}">JSON</a>
+      </nav>
+    </section>
+    <section class="summary">
+      <strong>${escapeHtml(String(clients.length))} client${clients.length === 1 ? "" : "s"}</strong>
+      <p>Storage: ${escapeHtml(storage === "postgres" ? "Postgres" : "Environment config")}</p>
+    </section>
+    <section class="list" aria-label="Clients">
+      ${rows}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 function renderProfilePage(req, url) {
   const profile = activeProfileForRequest(req, url);
   const suffix = leadViewerUrlSuffix(url);
@@ -1431,6 +1638,7 @@ function renderProfilePage(req, url) {
   const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
   const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
   const statusUrl = `${baseUrl}/admin/status${suffix}`;
+  const clientsUrl = `${baseUrl}/admin/clients${suffix}`;
   const envSnippet = profileEnvSnippet(profile);
   const services = profile.services.length ? profile.services.join(", ") : "Not set";
   const areas = profile.serviceAreas.length ? profile.serviceAreas.join(", ") : "Not set";
@@ -1489,6 +1697,7 @@ function renderProfilePage(req, url) {
       </div>
       <nav class="links" aria-label="Setup links">
         <a href="${escapeHtml(leadsUrl)}">Lead Viewer</a>
+        <a href="${escapeHtml(clientsUrl)}">Clients</a>
         <a href="${escapeHtml(onboardingUrl)}">Onboarding</a>
         <a href="${escapeHtml(statusUrl)}">System Status</a>
         <a href="${escapeHtml(agentContextUrl)}">Agent JSON</a>
@@ -1563,7 +1772,9 @@ function renderOnboardingPage(req, url) {
   const suffix = leadViewerUrlSuffix(url);
   const baseUrl = requestBaseUrl(req, url);
   const previewUrl = `/api/profile-preview${suffix}`;
+  const clientsUrl = `/api/clients${suffix}`;
   const profileUrl = `${baseUrl}/admin/profile${suffix}`;
+  const clientsPageUrl = `${baseUrl}/admin/clients${suffix}`;
   const statusUrl = `${baseUrl}/admin/status${suffix}`;
 
   return `<!doctype html>
@@ -1611,10 +1822,11 @@ function renderOnboardingPage(req, url) {
     <section class="top">
       <div>
         <h1>Client Onboarding</h1>
-        <p>Fill this out once per client. Copy the output into Render and Vapi.</p>
+        <p>Fill this out once per client. Generate the setup, then save the client when the database is ready.</p>
       </div>
       <nav class="links" aria-label="Setup links">
         <a href="${escapeHtml(profileUrl)}">Current Setup</a>
+        <a href="${escapeHtml(clientsPageUrl)}">Clients</a>
         <a href="${escapeHtml(statusUrl)}">System Status</a>
       </nav>
     </section>
@@ -1650,6 +1862,7 @@ function renderOnboardingPage(req, url) {
         <textarea name="greeting">${escapeHtml(profile.greeting)}</textarea>
         <div class="actions">
           <button type="submit">Generate</button>
+          <button type="button" id="save-client">Save Client</button>
         </div>
         <p class="status" id="status"></p>
       </form>
@@ -1664,6 +1877,11 @@ function renderOnboardingPage(req, url) {
           <h2>Private Lead Viewer Link</h2>
           <input id="lead-viewer-link" readonly>
           <div class="actions"><button type="button" data-copy-target="lead-viewer-link">Copy Lead Link</button></div>
+        </article>
+        <article class="card">
+          <h2>Private Lead Viewer Token</h2>
+          <input id="lead-viewer-token" readonly>
+          <div class="actions"><button type="button" data-copy-target="lead-viewer-token">Copy Token</button></div>
         </article>
         <article class="card">
           <h2>First Message</h2>
@@ -1722,6 +1940,7 @@ function renderOnboardingPage(req, url) {
       }
       document.getElementById("client-id").value = data.setup?.clientId || data.profile?.businessId || "";
       document.getElementById("lead-viewer-link").value = data.setup?.leadViewerLink || "";
+      document.getElementById("lead-viewer-token").value = data.leadViewerToken || "";
       document.getElementById("first-message").value = data.firstMessage || "";
       document.getElementById("prompt").value = data.prompt || "";
       document.getElementById("vapi-tool-url").value = data.setup?.vapiToolUrl || "";
@@ -1731,7 +1950,37 @@ function renderOnboardingPage(req, url) {
       document.getElementById("env").value = data.envSnippet || "";
       status.textContent = "Ready.";
     }
+    async function saveClient() {
+      status.textContent = "Saving client...";
+      const payload = Object.fromEntries(new FormData(form).entries());
+      const existingToken = document.getElementById("lead-viewer-token").value;
+      if (existingToken) payload.leadViewerToken = existingToken;
+      const response = await fetch("${escapeHtml(clientsUrl)}", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        status.textContent = data.error === "database_not_configured"
+          ? "Database is not configured yet. Add DATABASE_URL in Render, then save again."
+          : data.error || "Could not save client.";
+        return;
+      }
+      document.getElementById("client-id").value = data.setup?.clientId || data.profile?.businessId || "";
+      document.getElementById("lead-viewer-link").value = data.setup?.leadViewerLink || "";
+      document.getElementById("lead-viewer-token").value = data.leadViewerToken || "";
+      document.getElementById("first-message").value = data.firstMessage || "";
+      document.getElementById("prompt").value = data.prompt || "";
+      document.getElementById("vapi-tool-url").value = data.setup?.vapiToolUrl || "";
+      document.getElementById("owner-notification-setup").value = data.setup?.ownerNotificationSetup || "";
+      document.getElementById("booking-link").value = data.setup?.bookingLink || "";
+      document.getElementById("live-test-checklist").value = (data.setup?.liveTestChecklist || []).map((item, index) => String(index + 1) + ". " + item).join("\\n");
+      document.getElementById("env").value = data.envSnippet || "";
+      status.textContent = "Client saved. Copy this token now; it will not be shown again after you leave this page.";
+    }
     form.addEventListener("submit", generate);
+    document.getElementById("save-client").addEventListener("click", saveClient);
     document.querySelectorAll("[data-copy-target]").forEach((button) => {
       button.addEventListener("click", async () => {
         const target = document.getElementById(button.dataset.copyTarget);
@@ -3149,6 +3398,7 @@ function html(res, status, body) {
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+    req.accessContext = await requestAccessContextAsync(req, url);
     if (isRateLimited(req, url)) {
       return json(res, 429, { ok: false, error: "rate_limited" });
     }
@@ -3191,6 +3441,22 @@ const server = http.createServer(async (req, res) => {
       }
 
       return html(res, 200, renderSystemStatusPage(req, url));
+    }
+
+    if (req.method === "GET" && (url.pathname === "/clients" || url.pathname === "/admin/clients")) {
+      const access = requestAccessContext(req, url);
+      if (!access.ok || access.scope === "client") {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      const clients = postgresEnabled()
+        ? await listStoredClients()
+        : configuredClientProfiles().map((client) => ({
+            id: client.businessId,
+            businessName: client.businessName,
+            profile: publicBusinessProfile(client),
+          }));
+      return html(res, 200, renderClientsPage(clients, postgresEnabled() ? "postgres" : "env", req, url));
     }
 
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
@@ -3338,6 +3604,53 @@ const server = http.createServer(async (req, res) => {
       }
 
       return json(res, 200, systemStatusSnapshot(req, url));
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/clients") {
+      const access = requestAccessContext(req, url);
+      if (!access.ok || access.scope === "client") {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const clients = postgresEnabled()
+        ? await listStoredClients()
+        : configuredClientProfiles().map((client) => ({
+            id: client.businessId,
+            businessName: client.businessName,
+            profile: publicBusinessProfile(client),
+          }));
+      return json(res, 200, {
+        ok: true,
+        storage: postgresEnabled() ? "postgres" : "env",
+        clients,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/clients") {
+      const access = requestAccessContext(req, url);
+      if (!access.ok || access.scope === "client") {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const body = await readJson(req);
+      const saved = await saveStoredClient(body);
+      if (!saved.ok) {
+        return json(res, 503, saved);
+      }
+
+      const setup = onboardingSetupOutput(saved.profile, req, url);
+      setup.leadViewerLink = `${requestBaseUrl(req, url)}/admin/leads?token=${encodeURIComponent(saved.leadViewerToken)}`;
+      return json(res, 201, {
+        ok: true,
+        storage: "postgres",
+        profile: saved.publicProfile,
+        leadViewerToken: saved.leadViewerToken,
+        firstMessage: firstMessageForProfile(saved.profile),
+        prompt: buildVapiPrompt(saved.profile),
+        envSnippet: profileEnvSnippet(saved.profile),
+        businessProfileJson: businessProfileJson(saved.profile),
+        setup,
+      });
     }
 
     if (req.method === "POST" && url.pathname === "/api/profile-preview") {

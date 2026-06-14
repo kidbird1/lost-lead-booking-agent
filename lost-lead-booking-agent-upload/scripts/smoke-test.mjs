@@ -141,11 +141,48 @@ try {
   if (!profilePage.includes("Blue Sky Plumbing Setup") || !profilePage.includes("Copy Prompt")) {
     throw new Error("expected protected profile setup page to render");
   }
+  if (!profilePage.includes("Clients")) {
+    throw new Error("expected profile setup page to link to clients");
+  }
 
   const onboardingPage = await fetch(`${baseUrl}/admin/onboarding?token=${leadViewerToken}`)
     .then((res) => res.text());
   if (!onboardingPage.includes("Client Onboarding") || !onboardingPage.includes("Generate")) {
     throw new Error("expected protected onboarding page to render");
+  }
+  if (!onboardingPage.includes("Save Client") || !onboardingPage.includes("Private Lead Viewer Token")) {
+    throw new Error("expected onboarding page to include client save controls");
+  }
+  if (!onboardingPage.includes("Clients")) {
+    throw new Error("expected onboarding page to link to clients");
+  }
+
+  const clientsPage = await fetch(`${baseUrl}/admin/clients?token=smoke-admin-token`).then((res) => res.text());
+  if (!clientsPage.includes("Clients") || !clientsPage.includes("Client A Plumbing") || !clientsPage.includes("Storage: Environment config")) {
+    throw new Error("expected protected clients page to render env clients");
+  }
+
+  const clientScopedClientsPage = await fetch(`${baseUrl}/admin/clients?token=${clientAToken}`);
+  if (clientScopedClientsPage.status !== 401) {
+    throw new Error("expected client token to be blocked from operator clients page");
+  }
+
+  const clientsList = await fetch(`${baseUrl}/api/clients?token=smoke-admin-token`).then((res) => res.json());
+  if (!clientsList.ok || clientsList.storage !== "env" || clientsList.clients.length !== clients.length) {
+    throw new Error("expected client list API to fall back to env clients without Postgres");
+  }
+
+  const clientSaveResponse = await fetch(`${baseUrl}/api/clients?token=smoke-admin-token`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      businessId: "smoke-new-client",
+      businessName: "Smoke New Client",
+    }),
+  });
+  const clientSavePayload = await clientSaveResponse.json();
+  if (clientSaveResponse.status !== 503 || clientSavePayload.error !== "database_not_configured") {
+    throw new Error("expected client save API to fail safely without Postgres");
   }
 
   const statusPage = await fetch(`${baseUrl}/admin/status?token=${leadViewerToken}`)
