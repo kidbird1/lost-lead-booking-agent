@@ -8,6 +8,7 @@ if (!process.env.DATABASE_URL) {
 const port = process.env.PORT || "3010";
 const baseUrl = `http://127.0.0.1:${port}`;
 const token = "db-smoke-token";
+const adminToken = "db-smoke-admin-token";
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -49,6 +50,7 @@ const server = spawn(process.execPath, ["src/server.js"], {
     PORT: port,
     NODE_ENV: "test",
     LEAD_VIEWER_TOKEN: token,
+    ADMIN_TOKEN: adminToken,
     SEND_LIVE_MESSAGES: "false",
     SEND_LIVE_CALENDAR: "false",
     BUSINESS_NAME: "DB Smoke Services",
@@ -61,6 +63,47 @@ const server = spawn(process.execPath, ["src/server.js"], {
 
 try {
   await waitForHealth();
+
+  const savedClient = await post(`/api/clients?token=${adminToken}`, {
+    businessId: "db-smoke-client",
+    businessName: "DB Smoke Client",
+    assistantName: "Riley",
+    industry: "home services",
+    timezone: "America/New_York",
+    ownerPhone: "+15555550123",
+    ownerWhatsApp: "+15555550123",
+    services: "test repair",
+    serviceAreas: "33487",
+  });
+  if (!savedClient.ok || !savedClient.leadViewerToken || savedClient.profile.businessId !== "db-smoke-client") {
+    throw new Error("expected Postgres smoke client to be saved");
+  }
+
+  const clients = await fetch(`${baseUrl}/api/clients?token=${adminToken}`).then((res) => res.json());
+  if (!clients.ok || clients.storage !== "postgres" || !clients.clients.some((client) => client.id === "db-smoke-client")) {
+    throw new Error("expected Postgres smoke client to be readable");
+  }
+
+  const clientsPage = await fetch(`${baseUrl}/admin/clients?token=${adminToken}`).then((res) => res.text());
+  if (!clientsPage.includes("DB Smoke Client") || !clientsPage.includes("Storage: Postgres")) {
+    throw new Error("expected Postgres smoke clients page to render saved client");
+  }
+
+  const tenantLead = await post(`/leads?token=${savedClient.leadViewerToken}`, {
+    name: "DB Tenant Caller",
+    phone: "+15555550188",
+    service: "tenant repair",
+    address: "33487",
+    requestedTime: "tomorrow at 11 AM",
+  });
+  if (!tenantLead.ok || tenantLead.lead?.businessId !== "db-smoke-client") {
+    throw new Error("expected saved client token to create a tenant-scoped lead");
+  }
+
+  const tenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
+  if (!tenantLeads.ok || tenantLeads.leads.some((lead) => lead.businessId !== "db-smoke-client")) {
+    throw new Error("expected saved client token to read only its tenant leads");
+  }
 
   const created = await post(`/leads?token=${token}`, {
     name: "DB Smoke Caller",
