@@ -72,6 +72,8 @@ try {
     timezone: "America/New_York",
     ownerPhone: "+15555550123",
     ownerWhatsApp: "+15555550123",
+    assistantId: "asst_db_smoke",
+    phoneNumber: "+15550002001",
     services: "test repair",
     serviceAreas: "33487",
   });
@@ -103,6 +105,35 @@ try {
   const tenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
   if (!tenantLeads.ok || tenantLeads.leads.some((lead) => lead.businessId !== "db-smoke-client")) {
     throw new Error("expected saved client token to read only its tenant leads");
+  }
+
+  await post(`/webhooks/voice`, {
+    message: {
+      type: "tool-calls",
+      call: {
+        id: "call_db_routed_client",
+        assistantId: "asst_db_smoke",
+        phoneNumber: { number: "+15550002001" },
+      },
+      toolCallList: [
+        {
+          id: "tool_db_routed_client",
+          name: "bookAppointment",
+          parameters: {
+            name: "DB Routed Caller",
+            phone: "+15555550189",
+            service: "tenant repair",
+            address: "33487",
+            bookedTime: "tomorrow at 2 PM",
+          },
+        },
+      ],
+    },
+  });
+
+  const routedTenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
+  if (!routedTenantLeads.ok || !routedTenantLeads.leads.some((lead) => lead.callId === "call_db_routed_client" && lead.businessId === "db-smoke-client")) {
+    throw new Error("expected saved client assistant ID to route Vapi lead to tenant");
   }
 
   const created = await post(`/leads?token=${token}`, {
