@@ -461,6 +461,20 @@ async function listStoredClients() {
   }));
 }
 
+function clientProfileFromStoredRow(row) {
+  if (!row) return null;
+  const data = row.data || {};
+  return {
+    ...profileFromInput(data),
+    businessId: row.id,
+    businessName: row.business_name || data.businessName || defaultBusinessName,
+    ownerPhone: data.ownerPhone || "",
+    ownerWhatsApp: data.ownerWhatsApp || "",
+    assistantId: data.assistantId || "",
+    phoneNumber: data.phoneNumber || "",
+  };
+}
+
 async function saveStoredClient(input = {}) {
   if (!postgresEnabled()) {
     return { ok: false, error: "database_not_configured" };
@@ -503,17 +517,105 @@ async function storedClientFromToken(key) {
   );
   const row = result.rows[0];
   if (!row) return null;
-  const profile = {
-    ...profileFromInput(row.data || {}),
-    businessId: row.id,
-    businessName: row.business_name || row.data?.businessName || defaultBusinessName,
-  };
-  return {
-    ...profile,
-    leadViewerToken: "",
-    assistantId: row.data?.assistantId || "",
-    phoneNumber: row.data?.phoneNumber || "",
-  };
+  return { ...clientProfileFromStoredRow(row), leadViewerToken: "" };
+}
+
+async function storedClientByBusinessId(businessId) {
+  if (!businessId || !postgresEnabled()) return null;
+  await ensureDatabase();
+  const result = await databasePool().query(
+    "select id, business_name, data from clients where id = $1 limit 1",
+    [businessId],
+  );
+  return clientProfileFromStoredRow(result.rows[0]);
+}
+
+function normalizeRoutingText(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeRoutingPhone(value) {
+  return String(value || "").replace(/[^\d+]/g, "");
+}
+
+function clientMatchesRouting(client, hints = {}) {
+  if (!client) return false;
+  const businessId = normalizeRoutingText(hints.businessId);
+  const assistantId = normalizeRoutingText(hints.assistantId);
+  const phoneNumber = normalizeRoutingPhone(hints.phoneNumber);
+  const clientPhone = normalizeRoutingPhone(client.phoneNumber);
+
+  return Boolean(
+    businessId && normalizeRoutingText(client.businessId) === businessId
+    || assistantId && normalizeRoutingText(client.assistantId) === assistantId
+    || phoneNumber && clientPhone && clientPhone === phoneNumber
+  );
+}
+
+function configuredClientFromRouting(hints = {}) {
+  return configuredClientProfiles().find((client) => clientMatchesRouting(client, hints)) || null;
+}
+
+async function storedClientFromRouting(hints = {}) {
+  if (!postgresEnabled()) return null;
+  if (hints.businessId) {
+    const direct = await storedClientByBusinessId(hints.businessId);
+    if (direct) return direct;
+  }
+
+  await ensureDatabase();
+  const result = await databasePool().query("select id, business_name, data from clients");
+  return result.rows
+    .map(clientProfileFromStoredRow)
+    .find((client) => clientMatchesRouting(client, hints)) || null;
+}
+
+function firstNonEmpty(...values) {
+  return values.find((value) => String(value || "").trim()) || "";
+}
+
+function routingHintsFromVapiMessage(message = {}) {
+  const metadata = message.metadata || message.call?.metadata || message.assistant?.metadata || {};
+  const assistantId = firstNonEmpty(
+    message.assistantId,
+    message.assistant?.id,
+    message.call?.assistantId,
+    message.call?.assistant?.id,
+    metadata.assistantId,
+    metadata.vapiAssistantId,
+  );
+  const phoneNumber = firstNonEmpty(
+    message.phoneNumber?.number,
+    message.phoneNumber?.id,
+    message.phoneNumberId,
+    message.call?.phoneNumber?.number,
+    message.call?.phoneNumber?.id,
+    message.call?.phoneNumberId,
+    metadata.phoneNumber,
+    metadata.vapiPhoneNumber,
+  );
+  const businessId = firstNonEmpty(
+    metadata.businessId,
+    metadata.clientId,
+    message.businessId,
+    message.clientId,
+    message.call?.businessId,
+    message.call?.clientId,
+  );
+
+  return { businessId, assistantId, phoneNumber };
+}
+
+async function resolveClientProfile(hints = {}) {
+  return await storedClientFromRouting(hints)
+    || configuredClientFromRouting(hints)
+    || null;
+}
+
+async function profileForBusinessId(businessId) {
+  return await storedClientByBusinessId(businessId)
+    || configuredClientProfiles().find((client) => client.businessId === businessId)
+    || businessProfile();
 }
 
 function adminKey() {
@@ -814,13 +916,13 @@ function buildVapiPrompt(profile = businessProfile()) {
   ].join("\n");
 }
 
-function businessTimeZone() {
-  const configured = process.env.BUSINESS_TIMEZONE || defaultBusinessTimezone;
+function businessTimeZone(profile = null) {
+  const configured = profile?.timezone || process.env.BUSINESS_TIMEZONE || defaultBusinessTimezone;
   return DateTime.now().setZone(configured).isValid ? configured : defaultBusinessTimezone;
 }
 
-function currentBusinessTime() {
-  const zone = businessTimeZone();
+function currentBusinessTime(profile = null) {
+  const zone = businessTimeZone(profile);
   const configuredNow = process.env.SCHEDULING_NOW_ISO;
   if (configuredNow) {
     const parsed = DateTime.fromISO(configuredNow, { zone });
@@ -838,10 +940,10 @@ function parseClockMinutes(value, fallback) {
   return hours * 60 + minutes;
 }
 
-function businessHours() {
+function businessHours(profile = null) {
   return {
-    start: parseClockMinutes(process.env.BUSINESS_HOURS_START, 8 * 60),
-    end: parseClockMinutes(process.env.BUSINESS_HOURS_END, 18 * 60),
+    start: parseClockMinutes(profile?.businessHoursStart || process.env.BUSINESS_HOURS_START, 8 * 60),
+    end: parseClockMinutes(profile?.businessHoursEnd || process.env.BUSINESS_HOURS_END, 18 * 60),
   };
 }
 
@@ -940,8 +1042,8 @@ function scheduleReasonLabel(reason) {
   return labels[reason] || "";
 }
 
-function scheduleFromDateTime(start, end, reason = "inside_business_hours") {
-  const { start: openMinutes, end: closeMinutes } = businessHours();
+function scheduleFromDateTime(start, end, reason = "inside_business_hours", profile = null) {
+  const { start: openMinutes, end: closeMinutes } = businessHours(profile);
   const startMinutes = start.hour * 60 + start.minute;
   const endMinutes = end.hour * 60 + end.minute;
 
@@ -971,9 +1073,9 @@ function scheduleFromDateTime(start, end, reason = "inside_business_hours") {
   };
 }
 
-function buildAppointmentSchedule(input = {}) {
+function buildAppointmentSchedule(input = {}, profile = null) {
   const parameters = input.parameters || input.arguments || input;
-  const zone = businessTimeZone();
+  const zone = businessTimeZone(profile);
   const duration = appointmentDurationMinutes();
   const explicitStart = parameters.appointmentStartIso || parameters.startIso || input.appointmentStartIso || input.startIso;
   const explicitEnd = parameters.appointmentEndIso || parameters.endIso || input.appointmentEndIso || input.endIso;
@@ -1006,7 +1108,7 @@ function buildAppointmentSchedule(input = {}) {
       };
     }
 
-    return scheduleFromDateTime(start, end);
+    return scheduleFromDateTime(start, end, "inside_business_hours", profile);
   }
 
   const text = appointmentText(parameters);
@@ -1021,7 +1123,7 @@ function buildAppointmentSchedule(input = {}) {
     };
   }
 
-  const reference = currentBusinessTime();
+  const reference = currentBusinessTime(profile);
   const { result } = parseAppointmentTime(text, reference.toJSDate());
   if (!result) {
     return {
@@ -1064,7 +1166,7 @@ function buildAppointmentSchedule(input = {}) {
     };
   }
 
-  return scheduleFromDateTime(start, start.plus({ minutes: duration }));
+  return scheduleFromDateTime(start, start.plus({ minutes: duration }), "inside_business_hours", profile);
 }
 
 function leadViewerKey() {
@@ -1842,6 +1944,10 @@ function renderOnboardingPage(req, url) {
         <input name="assistantName" value="${escapeHtml(profile.assistantName)}">
         <label>Industry</label>
         <input name="industry" value="${escapeHtml(profile.industry)}">
+        <label>Vapi assistant ID</label>
+        <input name="assistantId" value="${escapeHtml(profile.assistantId || "")}">
+        <label>Vapi phone number or ID</label>
+        <input name="phoneNumber" value="${escapeHtml(profile.phoneNumber || "")}">
         <label>Timezone</label>
         <input name="timezone" value="${escapeHtml(profile.timezone || businessTimeZone())}">
         <label>Business hours start</label>
@@ -2501,7 +2607,7 @@ async function updateStoredLead(id, updates) {
 
 function normalizeLead(input = {}) {
   const parameters = input.parameters || input.arguments || input;
-  const profile = businessProfile();
+  const profile = input.tenantProfile || businessProfile();
   return {
     businessId: parameters.businessId || input.businessId || profile.businessId,
     callId: parameters.callId || input.callId || input.call?.id || "",
@@ -2519,7 +2625,7 @@ function normalizeLead(input = {}) {
     scheduleStatus: parameters.scheduleStatus || "",
     scheduleReason: parameters.scheduleReason || "",
     scheduleNote: parameters.scheduleNote || "",
-    businessTimezone: parameters.businessTimezone || "",
+    businessTimezone: parameters.businessTimezone || profile.timezone || "",
     calendarStatus: parameters.calendarStatus || "",
     calendarEventId: parameters.calendarEventId || "",
     calendarLink: parameters.calendarLink || "",
@@ -2742,9 +2848,9 @@ function roundUpToInterval(time, interval) {
   return time.startOf("day").plus({ minutes: roundedMinutes });
 }
 
-function buildAvailabilityWindow(input = {}) {
+function buildAvailabilityWindow(input = {}, profile = null) {
   const parameters = input.parameters || input.arguments || input;
-  const zone = businessTimeZone();
+  const zone = businessTimeZone(profile);
   const explicitStart = parameters.startIso || parameters.windowStartIso;
   const explicitEnd = parameters.endIso || parameters.windowEndIso;
 
@@ -2756,7 +2862,7 @@ function buildAvailabilityWindow(input = {}) {
     }
   }
 
-  const reference = currentBusinessTime();
+  const reference = currentBusinessTime(profile);
   const result = chrono.parse(String(availabilityRequestText(parameters)), reference.toJSDate(), { forwardDate: true })[0];
   if (!result) {
     return { ok: false, error: "unclear_availability_date", zone };
@@ -2771,11 +2877,11 @@ function buildAvailabilityWindow(input = {}) {
     return { ok: false, error: "invalid_availability_date", zone };
   }
 
-  const { start: openMinutes, end: closeMinutes } = businessHours();
+  const { start: openMinutes, end: closeMinutes } = businessHours(profile);
   const interval = slotIntervalMinutes();
   let start = day.startOf("day").plus({ minutes: openMinutes });
   const end = day.startOf("day").plus({ minutes: closeMinutes });
-  const now = currentBusinessTime();
+  const now = currentBusinessTime(profile);
 
   if (start.hasSame(now, "day") && start < now) {
     start = roundUpToInterval(now.plus({ minutes: 10 }), interval);
@@ -2833,8 +2939,8 @@ function mockBusyRangesForWindow(window) {
   }).filter(Boolean);
 }
 
-async function getAvailableSlots(input = {}) {
-  const window = buildAvailabilityWindow(input);
+async function getAvailableSlots(input = {}, profile = null) {
+  const window = buildAvailabilityWindow(input, profile);
   if (!window.ok) {
     return {
       ok: false,
@@ -3021,7 +3127,7 @@ async function createCalendarBooking(lead) {
 }
 
 async function sendOwnerNotification(lead) {
-  const profile = businessProfile();
+  const profile = await profileForBusinessId(lead.businessId);
   const message = [
     lead.status === "booked"
       ? `New booked job for ${profile.businessName}:`
@@ -3035,8 +3141,8 @@ async function sendOwnerNotification(lead) {
     lead.scheduleNote ? `Note: ${lead.scheduleNote}` : "",
   ].filter(Boolean).join("\n");
 
-  const ownerWhatsApp = process.env.OWNER_WHATSAPP_NUMBER;
-  const ownerSms = process.env.OWNER_PHONE_NUMBER;
+  const ownerWhatsApp = profile.ownerWhatsApp || process.env.OWNER_WHATSAPP_NUMBER;
+  const ownerSms = profile.ownerPhone || process.env.OWNER_PHONE_NUMBER;
 
   if (ownerWhatsApp) {
     const result = await sendTwilioMessage({ to: ownerWhatsApp, body: message, channel: "whatsapp" });
@@ -3074,7 +3180,7 @@ async function sendCustomerConfirmation(lead) {
     return { mode: "skipped", reason: "missing_phone_or_time" };
   }
 
-  const businessName = businessProfile().businessName;
+  const businessName = (await profileForBusinessId(lead.businessId)).businessName;
   const message = `Your appointment with ${businessName} is booked for ${lead.bookedTime || lead.requestedTime}. Reply here if you need to update anything.`;
 
   if (process.env.PREFER_CUSTOMER_WHATSAPP === "true" && process.env.TWILIO_WHATSAPP_FROM) {
@@ -3123,7 +3229,8 @@ function bookingToolMessage(processed) {
 
 async function processBooking(input) {
   const normalized = normalizeLead(input);
-  const schedule = buildAppointmentSchedule(normalized);
+  const tenantProfile = input.tenantProfile || await profileForBusinessId(normalized.businessId);
+  const schedule = buildAppointmentSchedule(normalized, tenantProfile);
   const candidate = {
     ...normalized,
     callId: input.callId || "",
@@ -3193,7 +3300,7 @@ function parseToolParameters(toolCall) {
   return value;
 }
 
-async function handleVapiToolCalls(message) {
+async function handleVapiToolCalls(message, tenantProfile = null) {
   const toolCalls = message.toolCallList || message.toolCalls || message.tool_calls || [];
   const results = [];
 
@@ -3227,7 +3334,7 @@ async function handleVapiToolCalls(message) {
       || toolName.includes("booking");
 
     if (isAvailabilityTool) {
-      const availability = await getAvailableSlots(parseToolParameters(toolCall));
+      const availability = await getAvailableSlots(parseToolParameters(toolCall), tenantProfile);
       results.push({
         name: toolResultName,
         toolCallId,
@@ -3239,6 +3346,8 @@ async function handleVapiToolCalls(message) {
     if (isBookingTool) {
       const processed = await processBooking({
         ...parseToolParameters(toolCall),
+        businessId: tenantProfile?.businessId || parseToolParameters(toolCall).businessId,
+        tenantProfile,
         callId: vapiCallId(message),
         toolCallId,
         source: "vapi_tool",
@@ -3274,10 +3383,31 @@ async function handleVapiToolCalls(message) {
 async function handleVapiWebhook(body) {
   const message = body.message || body;
   const type = message.type || "unknown";
+  const routingHints = routingHintsFromVapiMessage(message);
+  const tenantProfile = await resolveClientProfile(routingHints);
+  const hasRoutingHint = Boolean(routingHints.businessId || routingHints.assistantId || routingHints.phoneNumber);
+  const routingIsConfigured = postgresEnabled() || configuredClientProfiles().length > 0;
 
-  await saveEvent({ provider: "vapi", type, raw: body });
+  if (hasRoutingHint && routingIsConfigured && !tenantProfile) {
+    await saveEvent({
+      provider: "vapi",
+      type: "tenant_route_failed",
+      raw: { type, routingHints, body },
+    });
+    return {
+      ok: false,
+      error: "client_route_not_found",
+      message: "Client route is missing. Save the client assistant ID or phone number before taking live calls.",
+    };
+  }
+
+  const activeProfile = tenantProfile || businessProfile();
+  await saveEvent({ provider: "vapi", type, businessId: activeProfile.businessId, raw: body });
 
   if (type === "assistant-request") {
+    if (tenantProfile?.assistantId) {
+      return { assistantId: tenantProfile.assistantId };
+    }
     if (process.env.VAPI_ASSISTANT_ID) {
       return { assistantId: process.env.VAPI_ASSISTANT_ID };
     }
@@ -3285,7 +3415,7 @@ async function handleVapiWebhook(body) {
   }
 
   if (type === "tool-calls") {
-    return handleVapiToolCalls(message);
+    return handleVapiToolCalls(message, activeProfile);
   }
 
   if (type === "end-of-call-report") {
@@ -3305,6 +3435,8 @@ async function handleVapiWebhook(body) {
     const summary = message.summary || message.analysis?.summary || transcript.slice(0, 500);
     if (summary) {
       const lead = await saveLead(normalizeLead({
+        businessId: activeProfile.businessId,
+        tenantProfile: activeProfile,
         source: "vapi_end_of_call",
         status: "needs_review",
         summary,

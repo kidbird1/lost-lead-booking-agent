@@ -12,6 +12,8 @@ const busySlotCallId = `call_busy_slot_${Date.now()}`;
 const spokenTimeCallId = `call_spoken_time_${Date.now()}`;
 const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
+const routedClientACallId = `call_routed_client_a_${Date.now()}`;
+const unknownRouteCallId = `call_unknown_route_${Date.now()}`;
 const fallbackCallId = `call_fallback_${Date.now()}`;
 const businessProfile = {
   businessId: "blue-sky-plumbing",
@@ -30,6 +32,8 @@ const clients = [
     services: ["leak repair"],
     serviceAreas: ["33487"],
     leadViewerToken: clientAToken,
+    assistantId: "asst_client_a",
+    phoneNumber: "+15550001001",
   },
   {
     businessId: "client-b-hvac",
@@ -39,6 +43,8 @@ const clients = [
     services: ["AC repair"],
     serviceAreas: ["33485"],
     leadViewerToken: clientBToken,
+    assistantId: "asst_client_b",
+    phoneNumber: "+15550001002",
   },
 ];
 
@@ -336,6 +342,78 @@ try {
     .then((res) => res.json());
   if (!availabilityApi.ok || !Array.isArray(availabilityApi.slots) || availabilityApi.slots.length === 0) {
     throw new Error("expected available slots from protected availability API");
+  }
+
+  const clientAAssistantRequest = await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "assistant-request",
+      call: {
+        id: "call_assistant_request_client_a",
+        assistantId: "asst_client_a",
+        phoneNumber: { number: "+15550001001" },
+      },
+    },
+  });
+  if (clientAAssistantRequest.assistantId !== "asst_client_a") {
+    throw new Error("expected assistant request to route to client A assistant");
+  }
+
+  const unknownRouteResult = await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "tool-calls",
+      call: { id: unknownRouteCallId, assistantId: "asst_unknown" },
+      toolCallList: [
+        {
+          id: "tool_unknown_route",
+          name: "bookAppointment",
+          parameters: {
+            name: "Unknown Route",
+            phone: "+15555559999",
+            service: "test",
+            bookedTime: "Friday 1 PM",
+          },
+        },
+      ],
+    },
+  });
+  if (unknownRouteResult.ok !== false || unknownRouteResult.error !== "client_route_not_found") {
+    throw new Error("expected unknown tenant route to fail safely");
+  }
+
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "tool-calls",
+      call: {
+        id: routedClientACallId,
+        assistantId: "asst_client_a",
+        phoneNumber: { number: "+15550001001" },
+      },
+      toolCallList: [
+        {
+          id: "tool_routed_client_a",
+          name: "bookAppointment",
+          parameters: {
+            name: "Client A Caller",
+            phone: "+15555550131",
+            service: "leak repair",
+            address: "33487",
+            bookedTime: "Friday 3 PM",
+            summary: "Routed client A booking.",
+          },
+        },
+      ],
+    },
+  });
+
+  const routedClientALeads = await fetch(`${baseUrl}/api/leads?token=${clientAToken}`).then((res) => res.json());
+  const routedClientALead = routedClientALeads.leads.find((lead) => lead.callId === routedClientACallId);
+  if (!routedClientALead || routedClientALead.businessId !== "client-a-plumbing") {
+    throw new Error("expected routed Vapi call to create a client A lead");
+  }
+
+  const routedClientBLeads = await fetch(`${baseUrl}/api/leads?token=${clientBToken}`).then((res) => res.json());
+  if (routedClientBLeads.leads.some((lead) => lead.callId === routedClientACallId)) {
+    throw new Error("expected routed client A lead to stay out of client B viewer");
   }
 
   const toolResult = await post(webhookPath("/webhooks/voice"), {
