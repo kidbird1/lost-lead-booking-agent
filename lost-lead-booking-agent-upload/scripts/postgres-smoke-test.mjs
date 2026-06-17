@@ -80,10 +80,18 @@ try {
   if (!savedClient.ok || !savedClient.leadViewerToken || savedClient.profile.businessId !== "db-smoke-client") {
     throw new Error("expected Postgres smoke client to be saved");
   }
+  if (!savedClient.profile.services.includes("test repair") || !savedClient.profile.serviceAreas.includes("33487")) {
+    throw new Error("expected Postgres smoke client save to preserve services and service areas");
+  }
 
   const clients = await fetch(`${baseUrl}/api/clients?token=${adminToken}`).then((res) => res.json());
   if (!clients.ok || clients.storage !== "postgres" || !clients.clients.some((client) => client.id === "db-smoke-client")) {
     throw new Error("expected Postgres smoke client to be readable");
+  }
+  const systemStatus = await fetch(`${baseUrl}/api/system-status?token=${adminToken}`).then((res) => res.json());
+  const clientRoutingCheck = systemStatus.checks?.find((check) => check.key === "client_routing");
+  if (!clientRoutingCheck || clientRoutingCheck.status !== "ready" || !clientRoutingCheck.detail.includes("tenant routing")) {
+    throw new Error("expected system status to recognize Postgres client routing");
   }
 
   const clientsPage = await fetch(`${baseUrl}/admin/clients?token=${adminToken}`).then((res) => res.text());
