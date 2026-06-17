@@ -728,7 +728,18 @@ function pilotReadinessSummary(checks) {
   };
 }
 
-function systemStatusSnapshot(req, url) {
+async function configuredClientCount() {
+  if (!postgresEnabled()) return configuredClientProfiles().length;
+  try {
+    await ensureDatabase();
+    const result = await databasePool().query("select count(*)::int as count from clients");
+    return Number(result.rows[0]?.count || 0);
+  } catch {
+    return configuredClientProfiles().length;
+  }
+}
+
+function systemStatusSnapshot(req, url, options = {}) {
   const profile = activeProfileForRequest(req, url);
   const messagingLive = envIsTrue("SEND_LIVE_MESSAGES");
   const calendarLive = envIsTrue("SEND_LIVE_CALENDAR");
@@ -740,7 +751,9 @@ function systemStatusSnapshot(req, url) {
     && envIsSet("GOOGLE_CLIENT_SECRET")
     && envIsSet("GOOGLE_REFRESH_TOKEN")
     && envIsSet("GOOGLE_CALENDAR_ID");
-  const clientCount = configuredClientProfiles().length;
+  const clientCount = Number.isFinite(options.clientCount)
+    ? options.clientCount
+    : configuredClientProfiles().length;
   const { start, end } = businessHours();
 
   const snapshot = {
@@ -774,11 +787,11 @@ function systemStatusSnapshot(req, url) {
       },
       {
         key: "client_routing",
-        label: "Client token routing",
+        label: "Client routing",
         status: clientCount ? "ready" : "off",
         detail: clientCount
-          ? `${clientCount} client profile${clientCount === 1 ? "" : "s"} configured in CLIENTS_JSON.`
-          : "Optional for single-client pilot. Set CLIENTS_JSON for per-client viewer tokens.",
+          ? `${clientCount} client profile${clientCount === 1 ? "" : "s"} configured for tenant routing.`
+          : "Optional for single-client pilot. Save clients in onboarding for tenant routing.",
       },
       {
         key: "rate_limits",
@@ -1501,8 +1514,7 @@ function renderNotFoundLeadViewer() {
 </html>`;
 }
 
-function renderSystemStatusPage(req, url) {
-  const snapshot = systemStatusSnapshot(req, url);
+function renderSystemStatusPage(req, url, snapshot) {
   const suffix = leadViewerUrlSuffix(url);
   const statusClass = (status) => `state state-${escapeHtml(status)}`;
   const readiness = snapshot.pilotReadiness;
@@ -3572,7 +3584,9 @@ const server = http.createServer(async (req, res) => {
         return html(res, 401, renderUnauthorizedLeadViewer());
       }
 
-      return html(res, 200, renderSystemStatusPage(req, url));
+      return html(res, 200, renderSystemStatusPage(req, url, systemStatusSnapshot(req, url, {
+        clientCount: await configuredClientCount(),
+      })));
     }
 
     if (req.method === "GET" && (url.pathname === "/clients" || url.pathname === "/admin/clients")) {
@@ -3735,7 +3749,9 @@ const server = http.createServer(async (req, res) => {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
-      return json(res, 200, systemStatusSnapshot(req, url));
+      return json(res, 200, systemStatusSnapshot(req, url, {
+        clientCount: await configuredClientCount(),
+      }));
     }
 
     if (req.method === "GET" && url.pathname === "/api/clients") {

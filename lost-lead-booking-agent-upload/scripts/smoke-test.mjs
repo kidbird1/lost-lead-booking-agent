@@ -214,6 +214,10 @@ try {
   if (systemStatus.profile.businessId !== businessProfile.businessId) {
     throw new Error("expected system status to expose business ID");
   }
+  const clientRoutingCheck = systemStatus.checks.find((check) => check.key === "client_routing");
+  if (!clientRoutingCheck || clientRoutingCheck.status !== "ready" || !clientRoutingCheck.detail.includes("tenant routing")) {
+    throw new Error("expected system status to recognize configured client routing");
+  }
   if (!systemStatus.checks.some((check) => check.key === "calendar_booking" && check.status === "ready")) {
     throw new Error("expected system status to show calendar booking ready in mock live mode");
   }
