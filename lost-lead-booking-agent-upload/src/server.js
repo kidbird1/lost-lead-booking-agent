@@ -1349,6 +1349,139 @@ function publicEvent(event) {
   };
 }
 
+function issueSeverity(issue) {
+  const severityOrder = { critical: 0, warning: 1, info: 2 };
+  return severityOrder[issue.severity] ?? 3;
+}
+
+function issueSortKey(issue) {
+  return `${issueSeverity(issue)}:${String(issue.createdAt || "").padStart(30, "0")}`;
+}
+
+function issueForLead(lead) {
+  const publicItem = publicLead(lead);
+  if (publicItem.ownerNotificationMode === "error") {
+    return {
+      id: `owner-alert:${publicItem.id}`,
+      severity: "critical",
+      type: "owner_alert_failed",
+      businessId: publicItem.businessId,
+      createdAt: publicItem.updatedAt || publicItem.createdAt,
+      title: "Owner alert failed",
+      detail: publicItem.ownerNotificationError || "Check Twilio owner alert settings.",
+      leadId: publicItem.id,
+      callId: publicItem.callId,
+    };
+  }
+  if (publicItem.calendarStatus === "error" || publicItem.calendarError) {
+    return {
+      id: `calendar:${publicItem.id}`,
+      severity: "warning",
+      type: "calendar_failed",
+      businessId: publicItem.businessId,
+      createdAt: publicItem.updatedAt || publicItem.createdAt,
+      title: "Calendar action failed",
+      detail: publicItem.calendarErrorDetail || publicItem.calendarError || "Calendar could not complete.",
+      leadId: publicItem.id,
+      callId: publicItem.callId,
+    };
+  }
+  if (["missing_exact_clock_time", "outside_business_hours", "unclear_time"].includes(publicItem.scheduleReason)) {
+    return {
+      id: `schedule:${publicItem.id}`,
+      severity: "info",
+      type: publicItem.scheduleReason,
+      businessId: publicItem.businessId,
+      createdAt: publicItem.updatedAt || publicItem.createdAt,
+      title: publicItem.scheduleNote || "Lead needs scheduling follow-up",
+      detail: publicItem.requestedTime || publicItem.bookedTime || publicItem.summary || "Review lead details.",
+      leadId: publicItem.id,
+      callId: publicItem.callId,
+    };
+  }
+  return null;
+}
+
+function issueForEvent(event) {
+  const publicItem = publicEvent(event);
+  if (publicItem.type === "tenant_route_failed") {
+    return {
+      id: `route:${publicItem.id}`,
+      severity: "critical",
+      type: "tenant_route_failed",
+      businessId: publicItem.businessId,
+      createdAt: publicItem.createdAt,
+      title: "Tenant route failed",
+      detail: "A Vapi webhook did not match a saved client route.",
+      leadId: "",
+      callId: publicItem.callId,
+    };
+  }
+  return null;
+}
+
+function issueForClient(client) {
+  const profile = client.profile || {};
+  const missing = [];
+  if (!profile.assistantId && !profile.phoneNumber) missing.push("Vapi route");
+  if (!Array.isArray(profile.services) || !profile.services.length) missing.push("services");
+  if (!Array.isArray(profile.serviceAreas) || !profile.serviceAreas.length) missing.push("service areas");
+  if (!profile.ownerWhatsApp && !profile.ownerPhone) missing.push("owner contact");
+  if (!missing.length) return null;
+  return {
+    id: `client-config:${client.id}`,
+    severity: missing.includes("Vapi route") || missing.includes("owner contact") ? "warning" : "info",
+    type: "client_config_missing",
+    businessId: client.id || profile.businessId || "",
+    createdAt: client.updatedAt || client.createdAt || "",
+    title: "Client setup incomplete",
+    detail: `Missing: ${missing.join(", ")}.`,
+    leadId: "",
+    callId: "",
+  };
+}
+
+async function operatorIssues(req, url) {
+  const [leads, events, clients] = await Promise.all([
+    readLeads(),
+    readEvents(),
+    postgresEnabled()
+      ? listStoredClients()
+      : Promise.resolve(configuredClientProfiles().map((client) => ({
+          id: client.businessId,
+          businessName: client.businessName,
+          profile: publicBusinessProfile(client),
+        }))),
+  ]);
+  const visibleLeads = req && url ? filterRecordsForRequest(leads, req, url) : leads;
+  const visibleEvents = req && url ? filterRecordsForRequest(events, req, url) : events;
+  const access = req && url ? requestAccessContext(req, url) : { businessId: "" };
+  const visibleClients = access.businessId
+    ? clients.filter((client) => client.id === access.businessId || client.profile?.businessId === access.businessId)
+    : clients;
+
+  const issues = [
+    ...visibleClients.map(issueForClient),
+    ...visibleLeads.map(issueForLead),
+    ...visibleEvents.map(issueForEvent),
+  ]
+    .filter(Boolean)
+    .sort((a, b) => issueSortKey(a).localeCompare(issueSortKey(b)))
+    .slice(0, 100);
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    counts: {
+      critical: issues.filter((issue) => issue.severity === "critical").length,
+      warning: issues.filter((issue) => issue.severity === "warning").length,
+      info: issues.filter((issue) => issue.severity === "info").length,
+      total: issues.length,
+    },
+    issues,
+  };
+}
+
 function csvCell(value) {
   let text = typeof value === "object" && value !== null
     ? JSON.stringify(value)
@@ -2233,7 +2366,7 @@ function renderLeadsPage(leads, url, req) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a> <a href="/api/backup.json${escapeHtml(suffix)}">Backup JSON</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/issues${escapeHtml(suffix)}">Issues</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a> <a href="/api/backup.json${escapeHtml(suffix)}">Backup JSON</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -2506,7 +2639,7 @@ function renderEventsPage(events, url, req) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Event Log</h1>
-      <p class="sub">Recent Vapi and Twilio webhook activity. <a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/api/events${escapeHtml(suffix)}">JSON</a></p>
+      <p class="sub">Recent Vapi and Twilio webhook activity. <a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/issues${escapeHtml(suffix)}">Issues</a> <a href="/api/events${escapeHtml(suffix)}">JSON</a></p>
     </div>
   </header>
   <main class="wrap">
@@ -2514,6 +2647,96 @@ function renderEventsPage(events, url, req) {
       <thead><tr><th>Time</th><th>Client</th><th>Provider</th><th>Type</th><th>Call ID</th><th>Summary</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>` : `<div class="empty">No events saved yet.</div>`}
+  </main>
+</body>
+</html>`;
+}
+
+function renderIssuesPage(issueSnapshot, url, req) {
+  const profile = req ? activeProfileForRequest(req, url) : businessProfile();
+  const suffix = leadViewerUrlSuffix(url);
+  const rows = issueSnapshot.issues
+    .map((issue) => {
+      const leadLink = issue.leadId ? `<a href="/admin/leads/${encodeURIComponent(issue.leadId)}${escapeHtml(suffix)}">Lead</a>` : "";
+      return `<article class="issue issue-${escapeHtml(issue.severity)}">
+        <div>
+          <p class="meta">${escapeHtml(formatDate(issue.createdAt))} · ${escapeHtml(issue.businessId || profile.businessId)} · ${escapeHtml(issue.type)}</p>
+          <h2>${escapeHtml(issue.title)}</h2>
+          <p>${escapeHtml(issue.detail)}</p>
+          ${issue.callId ? `<p class="meta">Call: ${escapeHtml(issue.callId)}</p>` : ""}
+        </div>
+        <div class="actions">
+          <span>${escapeHtml(issue.severity)}</span>
+          ${leadLink}
+        </div>
+      </article>`;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(profile.businessName)} Issues</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #171717;
+      --muted: #5f6673;
+      --paper: #fbfaf6;
+      --line: #ddd8cb;
+      --panel: #fff;
+      --critical: #a13f3f;
+      --warning: #8a6b1f;
+      --info: #38658a;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
+    header { background: #fff; border-bottom: 1px solid var(--line); }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 24px; }
+    h1 { margin: 0; font-size: 30px; line-height: 1.1; }
+    h2 { margin: 0; font-size: 18px; }
+    p { margin: 8px 0 0; color: var(--muted); line-height: 1.45; }
+    a { color: var(--ink); }
+    .sub { margin: 8px 0 0; color: var(--muted); }
+    .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 22px 0; }
+    .summary div, .issue, .empty { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .summary strong { display: block; font-size: 24px; }
+    .issues { display: grid; gap: 10px; }
+    .issue { display: flex; justify-content: space-between; gap: 16px; border-left-width: 4px; }
+    .issue-critical { border-left-color: var(--critical); }
+    .issue-warning { border-left-color: var(--warning); }
+    .issue-info { border-left-color: var(--info); }
+    .meta { font-size: 13px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; align-content: start; }
+    .actions span, .actions a { border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; background: #fff; text-transform: capitalize; text-decoration: none; }
+    .empty { text-align: center; color: var(--muted); }
+    @media (max-width: 760px) {
+      .wrap { padding: 18px; }
+      .summary { grid-template-columns: 1fr 1fr; }
+      .issue { display: block; }
+      .actions { justify-content: start; margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>${escapeHtml(profile.businessName)} Issues</h1>
+      <p class="sub">Production watchlist for failed routes, alert failures, scheduling follow-up, and missing setup. <a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/issues${escapeHtml(suffix)}">JSON</a></p>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="summary" aria-label="Issue counts">
+      <div><strong>${escapeHtml(String(issueSnapshot.counts.total))}</strong><span>Total</span></div>
+      <div><strong>${escapeHtml(String(issueSnapshot.counts.critical))}</strong><span>Critical</span></div>
+      <div><strong>${escapeHtml(String(issueSnapshot.counts.warning))}</strong><span>Warnings</span></div>
+      <div><strong>${escapeHtml(String(issueSnapshot.counts.info))}</strong><span>Info</span></div>
+    </section>
+    <section class="issues" aria-label="Issues">
+      ${rows || `<div class="empty">No issues found.</div>`}
+    </section>
   </main>
 </body>
 </html>`;
@@ -3648,6 +3871,18 @@ const server = http.createServer(async (req, res) => {
       return html(res, 200, renderEventsPage(events, url, req));
     }
 
+    if (req.method === "GET" && (url.pathname === "/issues" || url.pathname === "/admin/issues")) {
+      if (!leadViewerConfigured()) {
+        return html(res, 503, renderLeadViewerDisabled());
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return html(res, 401, renderUnauthorizedLeadViewer());
+      }
+
+      return html(res, 200, renderIssuesPage(await operatorIssues(req, url), url, req));
+    }
+
     if (req.method === "GET" && url.pathname === "/api/leads") {
       if (!leadViewerConfigured()) {
         return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
@@ -3695,6 +3930,18 @@ const server = http.createServer(async (req, res) => {
           .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
           .slice(0, 100),
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/issues") {
+      if (!leadViewerConfigured()) {
+        return json(res, 503, { ok: false, error: "lead_viewer_disabled" });
+      }
+
+      if (!isLeadViewerAuthorized(req, url)) {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      return json(res, 200, await operatorIssues(req, url));
     }
 
     if (req.method === "GET" && url.pathname === "/api/backup.json") {

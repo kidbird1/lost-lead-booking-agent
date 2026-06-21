@@ -560,6 +560,16 @@ try {
     throw new Error("expected after-hours lead to need follow-up");
   }
 
+  const issuesPayload = await fetch(`${baseUrl}/api/issues?token=${leadViewerToken}`).then((res) => res.json());
+  if (!issuesPayload.ok || !issuesPayload.issues.some((issue) => issue.type === "outside_business_hours")) {
+    throw new Error("expected protected issues API to report scheduling follow-up");
+  }
+
+  const issuesPage = await fetch(`${baseUrl}/admin/issues?token=${leadViewerToken}`).then((res) => res.text());
+  if (!issuesPage.includes("Issues") || !issuesPage.includes("Production watchlist") || !issuesPage.includes("outside_business_hours")) {
+    throw new Error("expected protected issues page to render current issues");
+  }
+
   await post(webhookPath("/webhooks/voice"), {
     message: {
       type: "tool-calls",
