@@ -473,6 +473,48 @@ try {
     throw new Error("expected booking lead to record owner notification status");
   }
 
+  const topLevelCallId = `smoke_top_level_${Date.now()}`;
+  await post(webhookPath("/webhooks/voice"), {
+    call: { id: topLevelCallId },
+    message: {
+      type: "tool-calls",
+      toolCallList: [
+        {
+          id: "tool_smoke_top_level_1",
+          name: "bookAppointment",
+          parameters: {
+            name: "Christopher Wallace",
+            phone: "+15615576837",
+            service: "roof repair",
+            address: "33476",
+            bookedTime: "tomorrow at 3 PM",
+            summary: "Caller needs roof repair tomorrow at 3 PM.",
+          },
+        },
+      ],
+    },
+  });
+
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "end-of-call-report",
+      call: { id: topLevelCallId },
+      summary: "AI saved your appointment request for tomorrow at three PM.",
+      artifact: {
+        transcript: "User asked for roof repair. BookAppointment completed successfully. Assistant saved your appointment request.",
+      },
+    },
+  });
+
+  const topLevelPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const topLevelLeads = topLevelPayload.leads.filter((lead) => lead.callId === topLevelCallId);
+  if (topLevelLeads.length !== 1) {
+    throw new Error(`expected one top-level call lead, found ${topLevelLeads.length}`);
+  }
+  if (topLevelLeads[0].name !== "Christopher Wallace" || topLevelLeads[0].source !== "vapi_tool") {
+    throw new Error("expected top-level call ID booking to keep the structured tool lead only");
+  }
+
   const leadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
     .then((res) => res.text());
   if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test") || !leadDetailPage.includes("Lead status")) {
