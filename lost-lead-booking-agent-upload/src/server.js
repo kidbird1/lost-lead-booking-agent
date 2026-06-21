@@ -2873,19 +2873,42 @@ function normalizeLead(input = {}) {
   };
 }
 
-function vapiCallId(message = {}) {
-  return message.call?.id
-    || message.callId
-    || message.call_id
-    || message.artifact?.callId
-    || message.artifact?.call?.id
-    || "";
+function vapiCallId(...sources) {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const value = source.call?.id
+      || source.callId
+      || source.call_id
+      || source.artifact?.callId
+      || source.artifact?.call?.id
+      || source.message?.call?.id
+      || source.message?.callId
+      || source.message?.call_id
+      || source.message?.artifact?.callId
+      || source.message?.artifact?.call?.id
+      || "";
+    if (value) return String(value);
+  }
+  return "";
 }
 
 async function findLeadByCallId(callId) {
   if (!callId) return null;
   const leads = await readLeads();
   return leads.find((lead) => lead.callId === callId) || null;
+}
+
+async function findRecentToolLeadForBusiness(businessId, minutes = 20) {
+  if (!businessId) return null;
+  const cutoff = Date.now() - (minutes * 60 * 1000);
+  const leads = await readLeads();
+  return leads
+    .filter((lead) => lead.businessId === businessId && lead.source === "vapi_tool")
+    .filter((lead) => {
+      const createdAt = Date.parse(lead.createdAt || "");
+      return Number.isFinite(createdAt) && createdAt >= cutoff;
+    })
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))[0] || null;
 }
 
 async function findLeadById(id) {
@@ -3535,7 +3558,15 @@ function parseToolParameters(toolCall) {
   return value;
 }
 
-async function handleVapiToolCalls(message, tenantProfile = null) {
+function endOfCallLooksHandledByTool(summary = "", transcript = "") {
+  const text = `${summary}\n${transcript}`.toLowerCase();
+  return text.includes("saved your appointment request")
+    || text.includes("bookappointment")
+    || text.includes("appointment tool")
+    || text.includes("completed successfully");
+}
+
+async function handleVapiToolCalls(message, tenantProfile = null, callId = "") {
   const toolCalls = message.toolCallList || message.toolCalls || message.tool_calls || [];
   const results = [];
 
@@ -3583,7 +3614,7 @@ async function handleVapiToolCalls(message, tenantProfile = null) {
         ...parseToolParameters(toolCall),
         businessId: tenantProfile?.businessId || parseToolParameters(toolCall).businessId,
         tenantProfile,
-        callId: vapiCallId(message),
+        callId: callId || vapiCallId(message),
         toolCallId,
         source: "vapi_tool",
       });
@@ -3618,6 +3649,7 @@ async function handleVapiToolCalls(message, tenantProfile = null) {
 async function handleVapiWebhook(body) {
   const message = body.message || body;
   const type = message.type || "unknown";
+  const callId = vapiCallId(message, body);
   const routingHints = routingHintsFromVapiMessage(message);
   const tenantProfile = await resolveClientProfile(routingHints);
   const hasRoutingHint = Boolean(routingHints.businessId || routingHints.assistantId || routingHints.phoneNumber);
@@ -3650,11 +3682,10 @@ async function handleVapiWebhook(body) {
   }
 
   if (type === "tool-calls") {
-    return handleVapiToolCalls(message, activeProfile);
+    return handleVapiToolCalls(message, activeProfile, callId);
   }
 
   if (type === "end-of-call-report") {
-    const callId = vapiCallId(message);
     const existingLead = await findLeadByCallId(callId);
     if (existingLead) {
       return {
@@ -3668,6 +3699,16 @@ async function handleVapiWebhook(body) {
 
     const transcript = message.artifact?.transcript || "";
     const summary = message.summary || message.analysis?.summary || transcript.slice(0, 500);
+    const recentToolLead = await findRecentToolLeadForBusiness(activeProfile.businessId);
+    if (recentToolLead && endOfCallLooksHandledByTool(summary, transcript)) {
+      return {
+        ok: true,
+        type,
+        skipped: true,
+        reason: "recent_tool_lead_already_saved",
+        leadId: recentToolLead.id,
+      };
+    }
     if (summary) {
       const lead = await saveLead(normalizeLead({
         businessId: activeProfile.businessId,
