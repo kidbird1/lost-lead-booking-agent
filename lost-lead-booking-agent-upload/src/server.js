@@ -465,11 +465,12 @@ async function listStoredClients() {
   if (!postgresEnabled()) return [];
   await ensureDatabase();
   const result = await databasePool().query(
-    "select id, business_name, created_at, updated_at, data from clients order by updated_at desc"
+    "select id, business_name, lead_viewer_token_hash, created_at, updated_at, data from clients order by updated_at desc"
   );
   return result.rows.map((row) => ({
     id: row.id,
     businessName: row.business_name,
+    hasLeadViewerToken: Boolean(row.lead_viewer_token_hash),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     profile: row.data || {},
@@ -1525,6 +1526,56 @@ async function operatorIssues(req, url) {
   };
 }
 
+function clientSetupChecks(client) {
+  const profile = client.profile || {};
+  return {
+    route: Boolean(profile.assistantId || profile.phoneNumber),
+    ownerAlert: Boolean(profile.ownerWhatsApp || profile.ownerPhone),
+    leadViewer: Boolean(client.hasLeadViewerToken || profile.leadViewerToken),
+    services: Array.isArray(profile.services) && profile.services.length > 0,
+    serviceArea: Array.isArray(profile.serviceAreas) && profile.serviceAreas.length > 0,
+  };
+}
+
+function clientSetupStatus(checks) {
+  const required = [checks.route, checks.ownerAlert, checks.leadViewer];
+  if (required.every(Boolean) && checks.services && checks.serviceArea) return "ready";
+  if (required.every(Boolean)) return "needs_review";
+  return "missing";
+}
+
+function clientDashboardRows(clients, leads, events) {
+  return clients.map((client) => {
+    const profile = client.profile || {};
+    const id = client.id || profile.businessId || "";
+    const clientLeads = leads
+      .filter((lead) => (lead.businessId || "") === id)
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const clientEvents = events.filter((event) => (event.businessId || event.raw?.businessId || "") === id);
+    const issues = [
+      issueForClient(client),
+      ...clientLeads.map(issueForLead),
+      ...clientEvents.map(issueForEvent),
+    ].filter(Boolean);
+    const checks = clientSetupChecks(client);
+
+    return {
+      ...client,
+      id,
+      businessName: client.businessName || profile.businessName || "Unnamed client",
+      profile,
+      setupChecks: checks,
+      setupStatus: clientSetupStatus(checks),
+      leadCount: clientLeads.length,
+      followUpCount: clientLeads.filter((lead) => ["needs_follow_up", "needs_review", "new"].includes(lead.status)).length,
+      lastLeadAt: clientLeads[0]?.createdAt || "",
+      issueCount: issues.length,
+      criticalIssueCount: issues.filter((issue) => issue.severity === "critical").length,
+      warningIssueCount: issues.filter((issue) => issue.severity === "warning").length,
+    };
+  });
+}
+
 function csvCell(value) {
   let text = typeof value === "object" && value !== null
     ? JSON.stringify(value)
@@ -1824,7 +1875,13 @@ function renderClientsPage(clients, storage, req, url) {
   const baseUrl = requestBaseUrl(req, url);
   const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
   const statusUrl = `${baseUrl}/admin/status${suffix}`;
+  const issuesUrl = `${baseUrl}/admin/issues${suffix}`;
+  const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
   const apiUrl = `${baseUrl}/api/clients${suffix}`;
+  const readyCount = clients.filter((client) => client.setupStatus === "ready").length;
+  const issueCount = clients.reduce((total, client) => total + client.issueCount, 0);
+  const leadCount = clients.reduce((total, client) => total + client.leadCount, 0);
+  const followUpCount = clients.reduce((total, client) => total + client.followUpCount, 0);
   const rows = clients.length
     ? clients.map((client) => {
         const profile = client.profile || {};
@@ -1837,18 +1894,43 @@ function renderClientsPage(clients, storage, req, url) {
         const ownerAlert = profile.ownerWhatsApp || profile.ownerPhone
           ? "Configured"
           : "Missing";
+        const route = profile.assistantId || profile.phoneNumber ? "Configured" : "Missing";
+        const leadViewer = client.setupChecks?.leadViewer ? "Configured" : "Missing";
+        const setupLabel = client.setupStatus === "ready"
+          ? "Ready"
+          : client.setupStatus === "needs_review"
+            ? "Review"
+            : "Missing setup";
+        const issueLabel = client.issueCount
+          ? `${client.issueCount} issue${client.issueCount === 1 ? "" : "s"}`
+          : "No issues";
         return `<article class="client">
-          <div>
-            <p class="eyebrow">${escapeHtml(client.id || profile.businessId || "")}</p>
-            <h2>${escapeHtml(client.businessName || profile.businessName || "Unnamed client")}</h2>
-            <p>${escapeHtml(profile.industry || "home services")}</p>
+          <div class="client-head">
+            <div>
+              <p class="eyebrow">${escapeHtml(client.id || profile.businessId || "")}</p>
+              <h2>${escapeHtml(client.businessName || profile.businessName || "Unnamed client")}</h2>
+              <p>${escapeHtml(profile.industry || "home services")}</p>
+            </div>
+            <div class="badges">
+              <span class="badge badge-${escapeHtml(client.setupStatus)}">${escapeHtml(setupLabel)}</span>
+              <span class="badge ${client.issueCount ? "badge-warning" : "badge-ready"}">${escapeHtml(issueLabel)}</span>
+            </div>
           </div>
           <dl>
             <div><dt>Services</dt><dd>${escapeHtml(services)}</dd></div>
             <div><dt>Service Area</dt><dd>${escapeHtml(areas)}</dd></div>
+            <div><dt>Vapi Route</dt><dd>${escapeHtml(route)}</dd></div>
             <div><dt>Owner Alert</dt><dd>${escapeHtml(ownerAlert)}</dd></div>
-            <div><dt>Updated</dt><dd>${escapeHtml(client.updatedAt ? formatDate(client.updatedAt) : "Not stored")}</dd></div>
+            <div><dt>Lead Viewer</dt><dd>${escapeHtml(leadViewer)}</dd></div>
+            <div><dt>Total Leads</dt><dd>${escapeHtml(String(client.leadCount))}</dd></div>
+            <div><dt>Need Follow-Up</dt><dd>${escapeHtml(String(client.followUpCount))}</dd></div>
+            <div><dt>Last Lead</dt><dd>${escapeHtml(client.lastLeadAt ? formatDate(client.lastLeadAt) : "None yet")}</dd></div>
           </dl>
+          <div class="actions">
+            <a href="${escapeHtml(leadsUrl)}">Leads</a>
+            <a href="${escapeHtml(issuesUrl)}">Issues</a>
+            <a href="${escapeHtml(onboardingUrl)}">Edit Setup</a>
+          </div>
         </article>`;
       }).join("")
     : `<article class="empty">
@@ -1871,6 +1953,9 @@ function renderClientsPage(clients, storage, req, url) {
       --line: #ddd8cb;
       --panel: #fff;
       --soft: #f4f0e7;
+      --green: #2f6f4e;
+      --gold: #8a6b1f;
+      --red: #a13f3f;
     }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, sans-serif; background: var(--paper); color: var(--ink); }
@@ -1884,14 +1969,26 @@ function renderClientsPage(clients, storage, req, url) {
     dd { margin: 0; overflow-wrap: anywhere; }
     .top { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 18px; }
     .links { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
-    .summary { border: 1px solid var(--line); border-radius: 8px; background: var(--soft); padding: 14px; margin-bottom: 14px; }
+    .summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+    .summary div { border: 1px solid var(--line); border-radius: 8px; background: var(--soft); padding: 14px; }
+    .summary strong { display: block; font-size: 24px; }
+    .summary span { color: var(--muted); }
+    .summary p { grid-column: 1 / -1; margin: 0; }
     .list { display: grid; gap: 12px; }
     .client, .empty { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 16px; }
+    .client-head { display: flex; justify-content: space-between; gap: 16px; align-items: start; }
     .eyebrow { margin: 0 0 4px; font-size: 12px; letter-spacing: 0; text-transform: uppercase; }
+    .badges, .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
+    .actions { justify-content: start; margin-top: 16px; }
+    .badge { display: inline-flex; min-height: 28px; align-items: center; border-radius: 999px; padding: 4px 10px; font-size: 13px; white-space: nowrap; background: #eceff3; color: #26303d; }
+    .badge-ready { background: #e0f0e7; color: var(--green); }
+    .badge-needs_review, .badge-warning { background: #f4ead0; color: var(--gold); }
+    .badge-missing { background: #f6e1df; color: var(--red); }
     @media (max-width: 760px) {
-      .top { display: block; }
+      .top, .client-head { display: block; }
       .links { justify-content: start; margin-top: 14px; }
-      dl { grid-template-columns: 1fr; }
+      .badges { justify-content: start; margin-top: 12px; }
+      .summary, dl { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -1909,7 +2006,11 @@ function renderClientsPage(clients, storage, req, url) {
       </nav>
     </section>
     <section class="summary">
-      <strong>${escapeHtml(String(clients.length))} client${clients.length === 1 ? "" : "s"}</strong>
+      <div><strong>${escapeHtml(String(clients.length))}</strong><span>Clients</span></div>
+      <div><strong>${escapeHtml(String(readyCount))}</strong><span>Ready</span></div>
+      <div><strong>${escapeHtml(String(leadCount))}</strong><span>Total leads</span></div>
+      <div><strong>${escapeHtml(String(followUpCount))}</strong><span>Need follow-up</span></div>
+      <div><strong>${escapeHtml(String(issueCount))}</strong><span>Open issues</span></div>
       <p>Storage: ${escapeHtml(storage === "postgres" ? "Postgres" : "Environment config")}</p>
     </section>
     <section class="list" aria-label="Clients">
@@ -3978,9 +4079,16 @@ const server = http.createServer(async (req, res) => {
         : configuredClientProfiles().map((client) => ({
             id: client.businessId,
             businessName: client.businessName,
+            hasLeadViewerToken: Boolean(client.leadViewerToken),
             profile: publicBusinessProfile(client),
           }));
-      return html(res, 200, renderClientsPage(clients, postgresEnabled() ? "postgres" : "env", req, url));
+      const [leads, events] = await Promise.all([readLeads(), readEvents()]);
+      return html(res, 200, renderClientsPage(
+        clientDashboardRows(clients, leads, events),
+        postgresEnabled() ? "postgres" : "env",
+        req,
+        url,
+      ));
     }
 
     if (req.method === "GET" && (url.pathname === "/leads" || url.pathname === "/admin/leads")) {
@@ -4167,12 +4275,14 @@ const server = http.createServer(async (req, res) => {
         : configuredClientProfiles().map((client) => ({
             id: client.businessId,
             businessName: client.businessName,
+            hasLeadViewerToken: Boolean(client.leadViewerToken),
             profile: publicBusinessProfile(client),
           }));
+      const [leads, events] = await Promise.all([readLeads(), readEvents()]);
       return json(res, 200, {
         ok: true,
         storage: postgresEnabled() ? "postgres" : "env",
-        clients,
+        clients: clientDashboardRows(clients, leads, events),
       });
     }
 

@@ -170,6 +170,9 @@ try {
   if (!clientsPage.includes("Clients") || !clientsPage.includes("Client A Plumbing") || !clientsPage.includes("Storage: Environment config")) {
     throw new Error("expected protected clients page to render env clients");
   }
+  if (!clientsPage.includes("Vapi Route") || !clientsPage.includes("Lead Viewer") || !clientsPage.includes("Open issues")) {
+    throw new Error("expected protected clients page to show operator control room fields");
+  }
 
   const clientScopedClientsPage = await fetch(`${baseUrl}/admin/clients?token=${clientAToken}`);
   if (clientScopedClientsPage.status !== 401) {
@@ -179,6 +182,9 @@ try {
   const clientsList = await fetch(`${baseUrl}/api/clients?token=smoke-admin-token`).then((res) => res.json());
   if (!clientsList.ok || clientsList.storage !== "env" || clientsList.clients.length !== clients.length) {
     throw new Error("expected client list API to fall back to env clients without Postgres");
+  }
+  if (!clientsList.clients.every((client) => client.setupStatus && Number.isFinite(client.leadCount) && Number.isFinite(client.issueCount))) {
+    throw new Error("expected client list API to include control room counts");
   }
 
   const clientSaveResponse = await fetch(`${baseUrl}/api/clients?token=smoke-admin-token`, {
