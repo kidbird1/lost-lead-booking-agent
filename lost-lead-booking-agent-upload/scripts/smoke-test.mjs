@@ -548,6 +548,30 @@ try {
     throw new Error("expected fallback lead to extract ZIP and requested time");
   }
 
+  const locationFallbackCallId = `smoke_location_fallback_${Date.now()}`;
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "end-of-call-report",
+      call: { id: locationFallbackCallId },
+      summary: "Transcript-only fallback should extract city-style location.",
+      artifact: {
+        transcript: "AI: Thanks for calling Demo Roofing Co. How can I help you today? User: I need a roof repair. My name is Caller Jones. My phone number is five six one five five five zero one nine nine. I'm in Boca Raton. I want it at... tomorrow at three PM. AI: Perfect. I saved your appointment request for tomorrow at at three PM.",
+      },
+    },
+  });
+
+  const locationFallbackPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const locationFallbackLead = locationFallbackPayload.leads.find((lead) => lead.callId === locationFallbackCallId);
+  if (!locationFallbackLead) {
+    throw new Error("expected location fallback to save a lead");
+  }
+  if (locationFallbackLead.address !== "Boca Raton") {
+    throw new Error(`expected fallback location Boca Raton, got ${locationFallbackLead.address || "blank"}`);
+  }
+  if (locationFallbackLead.bookedTime.includes("at at")) {
+    throw new Error("expected fallback requested time to clean duplicate at");
+  }
+
   const leadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
     .then((res) => res.text());
   if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test") || !leadDetailPage.includes("Lead status")) {

@@ -3628,6 +3628,13 @@ function matchTranscriptValue(text, patterns) {
   return "";
 }
 
+function cleanRequestedTime(value = "") {
+  return String(value)
+    .replace(/\bat\s+at\b/gi, "at")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function extractLeadFromTranscript(transcript = "", summary = "") {
   const text = `${transcript}\n${summary}`.replace(/\s+/g, " ").trim();
   if (!text) return {};
@@ -3645,15 +3652,16 @@ function extractLeadFromTranscript(transcript = "", summary = "") {
   const addressText = matchTranscriptValue(text, [
     /\b(?:my\s+)?address(?:,\s*zip code)?\s+is\s+(.+?)(?:\s+and\s+my\s+phone\b|[.,!?]|\s+ai:|\s+assistant:|\s+user:|$)/i,
     /\bzip code\s+is\s+(.+?)(?:\s+and\s+my\s+phone\b|[.,!?]|\s+ai:|\s+assistant:|\s+user:|$)/i,
+    /\bi'?m\s+in\s+(.+?)(?:\s+and\s+i\s+want\b|\s+i\s+want\b|\s+for\b|[.,!?]|\s+ai:|\s+assistant:|\s+user:|$)/i,
   ]);
   const addressDigits = normalizeSpokenDigits(addressText);
   const address = addressDigits.length >= 4 ? addressDigits : addressText;
 
-  const requestedTime = matchTranscriptValue(text, [
+  const requestedTime = cleanRequestedTime(matchTranscriptValue(text, [
     /\b(?:for|by|at)\s+((?:tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+[^.,!?]+(?:am|pm|a\.m\.|p\.m\.)?)/i,
     /\bappointment request\s+for\s+([^.,!?]+(?:am|pm|a\.m\.|p\.m\.)?)/i,
     /\b(?:date|time)\s+(?:of|is|for)\s+([^.,!?]+)/i,
-  ]);
+  ]));
 
   const service = matchTranscriptValue(text, [
     /\b(?:need|needs|looking for|like|want|calling for|inquiring for)\s+(?:a|an|some)?\s*([^.,!?]+?)(?:\s+by\b|\s+for\b|\s+at\b|[.,!?]|$)/i,
