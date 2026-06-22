@@ -128,7 +128,10 @@ const server = spawn(process.execPath, ["src/server.js"], {
 });
 
 try {
-  await waitForHealth();
+  const health = await waitForHealth();
+  if (!health.deployment || health.deployment.version !== "0.1.0") {
+    throw new Error("expected health endpoint to include deployment version");
+  }
 
   const agentContext = await fetch(`${baseUrl}/api/agent-context?token=${leadViewerToken}`)
     .then((res) => res.json());
@@ -204,6 +207,9 @@ try {
     .then((res) => res.json());
   if (!systemStatus.ok || !Array.isArray(systemStatus.checks)) {
     throw new Error("expected protected system status API to return checks");
+  }
+  if (!systemStatus.deployment || systemStatus.deployment.version !== "0.1.0") {
+    throw new Error("expected protected system status API to return deployment details");
   }
   if (!systemStatus.pilotReadiness || !Array.isArray(systemStatus.pilotReadiness.nextActions)) {
     throw new Error("expected protected system status API to return pilot readiness");
