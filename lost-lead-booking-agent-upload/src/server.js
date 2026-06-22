@@ -1014,6 +1014,33 @@ function normalizeAppointmentTimeText(text = "") {
   return normalized.replace(/\s+/g, " ").trim();
 }
 
+const spokenDigitWords = {
+  zero: "0",
+  oh: "0",
+  o: "0",
+  one: "1",
+  two: "2",
+  three: "3",
+  four: "4",
+  five: "5",
+  six: "6",
+  seven: "7",
+  eight: "8",
+  nine: "9",
+};
+
+function normalizeSpokenDigits(text = "") {
+  return String(text)
+    .toLowerCase()
+    .split(/\s+/)
+    .map((part) => {
+      const token = part.replace(/[^a-z0-9]/g, "");
+      if (!token) return "";
+      return spokenDigitWords[token] ?? token.replace(/\D/g, "");
+    })
+    .join("");
+}
+
 function parseAppointmentTime(text, referenceDate) {
   const attempts = [String(text).trim(), normalizeAppointmentTimeText(text)];
   const seen = new Set();
@@ -3566,6 +3593,64 @@ function endOfCallLooksHandledByTool(summary = "", transcript = "") {
     || text.includes("completed successfully");
 }
 
+function cleanTranscriptValue(value = "") {
+  return String(value)
+    .replace(/\b(?:ai|assistant|user|caller):.*$/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/[.!,;:]+$/g, "")
+    .trim();
+}
+
+function matchTranscriptValue(text, patterns) {
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return cleanTranscriptValue(match[1]);
+  }
+  return "";
+}
+
+function extractLeadFromTranscript(transcript = "", summary = "") {
+  const text = `${transcript}\n${summary}`.replace(/\s+/g, " ").trim();
+  if (!text) return {};
+
+  const name = matchTranscriptValue(text, [
+    /\bmy name is\s+([^.,!?]+?)(?:\s+and\b|[.,!?]|$)/i,
+    /\bit'?s\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2})(?:[.,!?]|\s+i\b|$)/i,
+  ]);
+
+  const phoneText = matchTranscriptValue(text, [
+    /\b(?:my\s+)?phone(?:\s+number)?\s+is\s+(.+?)(?:[.,!?]|\s+and\s+my\b|\s+ai:|\s+assistant:|\s+user:|$)/i,
+  ]);
+  const phoneDigits = normalizeSpokenDigits(phoneText);
+
+  const addressText = matchTranscriptValue(text, [
+    /\b(?:my\s+)?address(?:,\s*zip code)?\s+is\s+(.+?)(?:\s+and\s+my\s+phone\b|[.,!?]|\s+ai:|\s+assistant:|\s+user:|$)/i,
+    /\bzip code\s+is\s+(.+?)(?:\s+and\s+my\s+phone\b|[.,!?]|\s+ai:|\s+assistant:|\s+user:|$)/i,
+  ]);
+  const addressDigits = normalizeSpokenDigits(addressText);
+  const address = addressDigits.length >= 4 ? addressDigits : addressText;
+
+  const requestedTime = matchTranscriptValue(text, [
+    /\b(?:for|by|at)\s+((?:tomorrow|today|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s+at\s+[^.,!?]+(?:am|pm|a\.m\.|p\.m\.)?)/i,
+    /\bappointment request\s+for\s+([^.,!?]+(?:am|pm|a\.m\.|p\.m\.)?)/i,
+    /\b(?:date|time)\s+(?:of|is|for)\s+([^.,!?]+)/i,
+  ]);
+
+  const service = matchTranscriptValue(text, [
+    /\b(?:need|needs|looking for|like|want|calling for|inquiring for)\s+(?:a|an|some)?\s*([^.,!?]+?)(?:\s+by\b|\s+for\b|\s+at\b|[.,!?]|$)/i,
+    /\bwhat type of roofing service or repair you need\?\s*(?:user:|caller:)?\s*([^.,!?]+)/i,
+  ]);
+
+  return {
+    name,
+    phone: phoneDigits.length >= 10 ? phoneDigits.slice(-10) : phoneDigits,
+    service,
+    address,
+    requestedTime,
+    bookedTime: requestedTime,
+  };
+}
+
 async function handleVapiToolCalls(message, tenantProfile = null, callId = "") {
   const toolCalls = message.toolCallList || message.toolCalls || message.tool_calls || [];
   const results = [];
@@ -3700,7 +3785,7 @@ async function handleVapiWebhook(body) {
     const transcript = message.artifact?.transcript || "";
     const summary = message.summary || message.analysis?.summary || transcript.slice(0, 500);
     const recentToolLead = await findRecentToolLeadForBusiness(activeProfile.businessId);
-    if (recentToolLead && endOfCallLooksHandledByTool(summary, transcript)) {
+    if (!callId && recentToolLead && endOfCallLooksHandledByTool(summary, transcript)) {
       return {
         ok: true,
         type,
@@ -3710,7 +3795,9 @@ async function handleVapiWebhook(body) {
       };
     }
     if (summary) {
+      const extractedLead = extractLeadFromTranscript(transcript, summary);
       const lead = await saveLead(normalizeLead({
+        ...extractedLead,
         businessId: activeProfile.businessId,
         tenantProfile: activeProfile,
         source: "vapi_end_of_call",

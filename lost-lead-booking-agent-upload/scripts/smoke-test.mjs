@@ -515,6 +515,33 @@ try {
     throw new Error("expected top-level call ID booking to keep the structured tool lead only");
   }
 
+  const endCallFallbackCallId = `smoke_end_call_fallback_${Date.now()}`;
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "end-of-call-report",
+      call: { id: endCallFallbackCallId },
+      summary: "Transcript-only fallback should still save useful caller details.",
+      artifact: {
+        transcript: "AI: Thanks for calling Demo Roofing Co. How can I help you today? User: Yeah. It's Jonathan Kominger. I'm looking for a roof worker, a maintenance person to do maintenance work on the roof. I'm calling for tomorrow at three PM. That's the time I want someone to come in. And my address, ZIP code is six nine seven seven three, and my phone number is two two seven eight six zero nine four six oh. AI: Perfect. I saved your appointment request for tomorrow at three PM.",
+      },
+    },
+  });
+
+  const endCallFallbackPayload = await fetch(`${baseUrl}/api/leads?token=${leadViewerToken}`).then((res) => res.json());
+  const endCallFallbackLead = endCallFallbackPayload.leads.find((lead) => lead.callId === endCallFallbackCallId);
+  if (!endCallFallbackLead) {
+    throw new Error("expected transcript-only fallback to save a lead");
+  }
+  if (endCallFallbackLead.name !== "Jonathan Kominger") {
+    throw new Error(`expected fallback lead name, got ${endCallFallbackLead.name || "blank"}`);
+  }
+  if (endCallFallbackLead.phone !== "2278609460") {
+    throw new Error(`expected fallback phone digits, got ${endCallFallbackLead.phone || "blank"}`);
+  }
+  if (endCallFallbackLead.address !== "69773" || !endCallFallbackLead.bookedTime.toLowerCase().includes("tomorrow at three pm")) {
+    throw new Error("expected fallback lead to extract ZIP and requested time");
+  }
+
   const leadDetailPage = await fetch(`${baseUrl}/admin/leads/${matchingLeads[0].id}?token=${leadViewerToken}`)
     .then((res) => res.text());
   if (!leadDetailPage.includes("Lead Details") || !leadDetailPage.includes("Raw Intake") || !leadDetailPage.includes("Smoke Test") || !leadDetailPage.includes("Lead status")) {
