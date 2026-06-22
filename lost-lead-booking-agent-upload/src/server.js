@@ -32,6 +32,21 @@ const defaultNeverSay = [
   "Do not diagnose dangerous problems.",
 ];
 
+function deploymentInfo() {
+  const commit = process.env.RENDER_GIT_COMMIT
+    || process.env.GIT_COMMIT
+    || process.env.SOURCE_VERSION
+    || "";
+  return {
+    version: process.env.APP_VERSION || process.env.npm_package_version || "0.1.0",
+    commit,
+    shortCommit: commit ? commit.slice(0, 7) : "",
+    branch: process.env.RENDER_GIT_BRANCH || process.env.GIT_BRANCH || "",
+    environment: process.env.NODE_ENV || "development",
+    serviceName: process.env.RENDER_SERVICE_NAME || "",
+  };
+}
+
 async function ensureStore() {
   if (!existsSync(dataDir)) {
     await mkdir(dataDir, { recursive: true });
@@ -763,6 +778,7 @@ function systemStatusSnapshot(req, url, options = {}) {
       && Boolean(profile.businessName && profile.assistantName)
       && (!messagingLive || (ownerReady && (smsReady || whatsappReady)))
       && (!calendarLive || googleReady),
+    deployment: deploymentInfo(),
     baseUrl: requestBaseUrl(req, url),
     profile: publicBusinessProfile(profile),
     businessTimezone: businessTimeZone(),
@@ -1790,6 +1806,9 @@ function renderSystemStatusPage(req, url, snapshot) {
       <div><strong>Timezone</strong><span>${escapeHtml(snapshot.businessTimezone)}</span></div>
       <div><strong>Business Hours</strong><span>${escapeHtml(snapshot.businessHours.start)} to ${escapeHtml(snapshot.businessHours.end)}</span></div>
       <div><strong>Base URL</strong><span>${escapeHtml(snapshot.baseUrl)}</span></div>
+      <div><strong>App Version</strong><span>${escapeHtml(snapshot.deployment.version)}</span></div>
+      <div><strong>Deploy Commit</strong><span>${escapeHtml(snapshot.deployment.shortCommit || "not reported")}</span></div>
+      <div><strong>Environment</strong><span>${escapeHtml(snapshot.deployment.environment)}</span></div>
     </section>
 
     <section class="checks" aria-label="System checks">
@@ -3899,7 +3918,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
-      return json(res, 200, { ok: true, service: "lost-lead-booking-agent" });
+      return json(res, 200, { ok: true, service: "lost-lead-booking-agent", deployment: deploymentInfo() });
     }
 
     if (req.method === "GET" && (url.pathname === "/profile" || url.pathname === "/admin/profile")) {
