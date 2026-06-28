@@ -628,10 +628,14 @@ async function resolveClientProfile(hints = {}) {
     || null;
 }
 
-async function profileForBusinessId(businessId) {
+async function clientProfileByBusinessId(businessId) {
   return await storedClientByBusinessId(businessId)
     || configuredClientProfiles().find((client) => client.businessId === businessId)
-    || businessProfile();
+    || null;
+}
+
+async function profileForBusinessId(businessId) {
+  return await clientProfileByBusinessId(businessId) || businessProfile();
 }
 
 function adminKey() {
@@ -679,6 +683,23 @@ async function requestAccessContextAsync(req, url) {
   }
 
   return current;
+}
+
+async function applyAdminClientScope(req, url) {
+  const access = requestAccessContext(req, url);
+  const businessId = String(url.searchParams.get("clientId") || "").trim();
+  if (access.scope !== "admin" || !businessId) return { ok: true };
+
+  const profile = await clientProfileByBusinessId(businessId);
+  if (!profile) return { ok: false, error: "client_not_found" };
+
+  req.accessContext = {
+    ...access,
+    profile,
+    businessId: profile.businessId,
+    adminClientScope: true,
+  };
+  return { ok: true };
 }
 
 function activeProfileForRequest(req, url) {
@@ -1234,12 +1255,17 @@ function webhookSharedSecret() {
   return process.env.WEBHOOK_SHARED_SECRET || process.env.VOICE_WEBHOOK_SECRET || "";
 }
 
-function leadViewerUrlSuffix(url) {
+function leadViewerUrlSuffix(url, additions = {}) {
+  const params = new URLSearchParams();
   const token = url.searchParams.get("token");
   const key = url.searchParams.get("key");
-  if (token) return `?token=${encodeURIComponent(token)}`;
-  if (key) return `?key=${encodeURIComponent(key)}`;
-  return "";
+  const clientId = Object.hasOwn(additions, "clientId")
+    ? additions.clientId
+    : url.searchParams.get("clientId");
+  if (token) params.set("token", token);
+  else if (key) params.set("key", key);
+  if (clientId) params.set("clientId", clientId);
+  return params.size ? `?${params.toString()}` : "";
 }
 
 function isLeadViewerAuthorized(req, url) {
@@ -1875,8 +1901,6 @@ function renderClientsPage(clients, storage, req, url) {
   const baseUrl = requestBaseUrl(req, url);
   const onboardingUrl = `${baseUrl}/admin/onboarding${suffix}`;
   const statusUrl = `${baseUrl}/admin/status${suffix}`;
-  const issuesUrl = `${baseUrl}/admin/issues${suffix}`;
-  const leadsUrl = `${baseUrl}/admin/leads${suffix}`;
   const apiUrl = `${baseUrl}/api/clients${suffix}`;
   const readyCount = clients.filter((client) => client.setupStatus === "ready").length;
   const issueCount = clients.reduce((total, client) => total + client.issueCount, 0);
@@ -1885,6 +1909,11 @@ function renderClientsPage(clients, storage, req, url) {
   const rows = clients.length
     ? clients.map((client) => {
         const profile = client.profile || {};
+        const clientId = client.id || profile.businessId || "";
+        const clientSuffix = leadViewerUrlSuffix(url, { clientId });
+        const clientLeadsUrl = `${baseUrl}/admin/leads${clientSuffix}`;
+        const clientIssuesUrl = `${baseUrl}/admin/issues${clientSuffix}`;
+        const clientSetupUrl = `${baseUrl}/admin/onboarding${clientSuffix}`;
         const services = Array.isArray(profile.services) && profile.services.length
           ? profile.services.join(", ")
           : "Not set";
@@ -1927,9 +1956,9 @@ function renderClientsPage(clients, storage, req, url) {
             <div><dt>Last Lead</dt><dd>${escapeHtml(client.lastLeadAt ? formatDate(client.lastLeadAt) : "None yet")}</dd></div>
           </dl>
           <div class="actions">
-            <a href="${escapeHtml(leadsUrl)}">Leads</a>
-            <a href="${escapeHtml(issuesUrl)}">Issues</a>
-            <a href="${escapeHtml(onboardingUrl)}">Edit Setup</a>
+            <a href="${escapeHtml(clientLeadsUrl)}">Leads</a>
+            <a href="${escapeHtml(clientIssuesUrl)}">Issues</a>
+            <a href="${escapeHtml(clientSetupUrl)}">Edit Setup</a>
           </div>
         </article>`;
       }).join("")
@@ -2396,6 +2425,7 @@ function renderOnboardingPage(req, url) {
 
 function renderLeadsPage(leads, url, req) {
   const profile = req ? activeProfileForRequest(req, url) : businessProfile();
+  const access = req ? requestAccessContext(req, url) : { scope: "legacy" };
   const visibleLeads = leads
     .map(publicLead)
     .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
@@ -2513,7 +2543,7 @@ function renderLeadsPage(leads, url, req) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Lead Follow-Up</h1>
-      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. <a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/issues${escapeHtml(suffix)}">Issues</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a> <a href="/api/backup.json${escapeHtml(suffix)}">Backup JSON</a></p>
+      <p class="sub">Call leads from ${escapeHtml(profile.assistantName)}, ready for owner follow-up. ${access.scope === "admin" ? `<a href="/admin/clients${escapeHtml(leadViewerUrlSuffix(url, { clientId: "" }))}">Clients</a> ` : ""}<a href="/admin/profile${escapeHtml(suffix)}">Setup</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/issues${escapeHtml(suffix)}">Issues</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/leads.csv${escapeHtml(suffix)}">Export CSV</a> <a href="/api/backup.json${escapeHtml(suffix)}">Backup JSON</a></p>
       <section class="metrics" aria-label="Lead totals">
         <div class="metric"><strong>${counts.all || 0}</strong><span>Total leads</span></div>
         <div class="metric"><strong>${(counts.needs_follow_up || 0) + (counts.needs_review || 0) + (counts.new || 0)}</strong><span>Need follow-up</span></div>
@@ -2801,6 +2831,7 @@ function renderEventsPage(events, url, req) {
 
 function renderIssuesPage(issueSnapshot, url, req) {
   const profile = req ? activeProfileForRequest(req, url) : businessProfile();
+  const access = req ? requestAccessContext(req, url) : { scope: "legacy" };
   const suffix = leadViewerUrlSuffix(url);
   const rows = issueSnapshot.issues
     .map((issue) => {
@@ -2871,7 +2902,7 @@ function renderIssuesPage(issueSnapshot, url, req) {
   <header>
     <div class="wrap">
       <h1>${escapeHtml(profile.businessName)} Issues</h1>
-      <p class="sub">Production watchlist for failed routes, alert failures, scheduling follow-up, and missing setup. <a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/issues${escapeHtml(suffix)}">JSON</a></p>
+      <p class="sub">Production watchlist for failed routes, alert failures, scheduling follow-up, and missing setup. ${access.scope === "admin" ? `<a href="/admin/clients${escapeHtml(leadViewerUrlSuffix(url, { clientId: "" }))}">Clients</a> ` : ""}<a href="/admin/leads${escapeHtml(suffix)}">Leads</a> <a href="/admin/status${escapeHtml(suffix)}">System Status</a> <a href="/admin/events${escapeHtml(suffix)}">Events</a> <a href="/api/issues${escapeHtml(suffix)}">JSON</a></p>
     </div>
   </header>
   <main class="wrap">
@@ -4022,6 +4053,10 @@ const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     req.accessContext = await requestAccessContextAsync(req, url);
+    const clientScope = await applyAdminClientScope(req, url);
+    if (!clientScope.ok) {
+      return json(res, 404, { ok: false, error: clientScope.error });
+    }
     if (isRateLimited(req, url)) {
       return json(res, 429, { ok: false, error: "rate_limited" });
     }
