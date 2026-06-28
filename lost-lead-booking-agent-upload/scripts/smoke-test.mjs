@@ -173,6 +173,9 @@ try {
   if (!clientsPage.includes("Vapi Route") || !clientsPage.includes("Lead Viewer") || !clientsPage.includes("Open issues")) {
     throw new Error("expected protected clients page to show operator control room fields");
   }
+  if (!clientsPage.includes("clientId=client-a-plumbing") || !clientsPage.includes("clientId=client-b-hvac")) {
+    throw new Error("expected client control room actions to open tenant-scoped views");
+  }
 
   const clientScopedClientsPage = await fetch(`${baseUrl}/admin/clients?token=${clientAToken}`);
   if (clientScopedClientsPage.status !== 401) {
@@ -292,6 +295,38 @@ try {
   const clientBLeads = await fetch(`${baseUrl}/api/leads?token=${clientBToken}`).then((res) => res.json());
   if (clientBLeads.leads.some((lead) => lead.id === clientLead.lead.id)) {
     throw new Error("expected client B token not to see client A lead");
+  }
+
+  const adminClientALeads = await fetch(`${baseUrl}/api/leads?token=smoke-admin-token&clientId=client-a-plumbing`)
+    .then((res) => res.json());
+  if (!adminClientALeads.leads.some((lead) => lead.id === clientLead.lead.id)
+    || adminClientALeads.leads.some((lead) => lead.businessId !== "client-a-plumbing")) {
+    throw new Error("expected admin client A view to contain only client A leads");
+  }
+
+  const adminClientBLeads = await fetch(`${baseUrl}/api/leads?token=smoke-admin-token&clientId=client-b-hvac`)
+    .then((res) => res.json());
+  if (adminClientBLeads.leads.some((lead) => lead.id === clientLead.lead.id)
+    || adminClientBLeads.leads.some((lead) => lead.businessId !== "client-b-hvac")) {
+    throw new Error("expected admin client B view to contain only client B leads");
+  }
+
+  const adminClientALeadsPage = await fetch(`${baseUrl}/admin/leads?token=smoke-admin-token&clientId=client-a-plumbing`)
+    .then((res) => res.text());
+  if (!adminClientALeadsPage.includes("Client A Plumbing Lead Follow-Up")
+    || !adminClientALeadsPage.includes("Tenant Caller")) {
+    throw new Error("expected admin client A leads page to use the selected tenant");
+  }
+
+  const adminClientAIssues = await fetch(`${baseUrl}/api/issues?token=smoke-admin-token&clientId=client-a-plumbing`)
+    .then((res) => res.json());
+  if (adminClientAIssues.issues.some((issue) => issue.businessId !== "client-a-plumbing")) {
+    throw new Error("expected admin client A issues to contain only client A records");
+  }
+
+  const missingAdminClient = await fetch(`${baseUrl}/api/leads?token=smoke-admin-token&clientId=missing-client`);
+  if (missingAdminClient.status !== 404) {
+    throw new Error("expected unknown admin client scope to fail safely");
   }
 
   const blockedClientDetail = await fetch(`${baseUrl}/api/leads/${clientLead.lead.id}?token=${clientBToken}`);
