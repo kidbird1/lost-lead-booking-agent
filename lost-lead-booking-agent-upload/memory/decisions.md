@@ -72,3 +72,5 @@
 - Future payment integration will use Stripe Link. It remains deferred until the core 24/7 service is reliable and the billing workflow is defined.
 - Critical operator alerts reuse the existing Twilio WhatsApp path, remain disabled by default, contain no customer details, and are deduplicated by failure key.
 - Unknown tenant routes are recorded under `unrouted`, never under a default tenant.
+- Booking tool calls are serialized by tenant ID plus provider call ID. Postgres uses an advisory lock across app instances; local/demo mode uses an in-process lock.
+- Duplicate deliveries must re-check the saved lead after acquiring the lock so only one lead, calendar action, and owner notification are created.

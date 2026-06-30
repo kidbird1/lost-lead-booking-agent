@@ -13,6 +13,7 @@ const spokenTimeCallId = `call_spoken_time_${Date.now()}`;
 const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
 const routedClientACallId = `call_routed_client_a_${Date.now()}`;
+const concurrentClientACallId = `call_concurrent_client_a_${Date.now()}`;
 const retryOwnerAlertCallId = `call_owner_alert_retry_${Date.now()}`;
 const exhaustedOwnerAlertCallId = `call_owner_alert_exhausted_${Date.now()}`;
 const unknownRouteCallId = `call_unknown_route_${Date.now()}`;
@@ -598,6 +599,38 @@ try {
       ],
     },
   });
+
+  const concurrentBookingBody = {
+    message: {
+      type: "tool-calls",
+      call: { id: concurrentClientACallId, assistantId: "asst_client_a" },
+      toolCallList: [
+        {
+          id: "tool_concurrent_client_a",
+          name: "bookAppointment",
+          parameters: {
+            name: "Concurrent Retry Caller",
+            phone: "+15555550134",
+            service: "leak repair",
+            address: "33487",
+            bookedTime: "Friday 4 PM",
+            summary: "Two Vapi deliveries should create one lead and one owner alert.",
+          },
+        },
+      ],
+    },
+  };
+  await Promise.all([
+    post(webhookPath("/webhooks/voice"), concurrentBookingBody),
+    post(webhookPath("/webhooks/voice"), concurrentBookingBody),
+  ]);
+  const concurrentClientALeads = await fetch(`${baseUrl}/api/leads?token=${clientAToken}`).then((res) => res.json());
+  const concurrentMatches = concurrentClientALeads.leads.filter((lead) => lead.callId === concurrentClientACallId);
+  if (concurrentMatches.length !== 1
+    || concurrentMatches[0].ownerNotificationAttempts !== 1
+    || concurrentMatches[0].calendarStatus !== "live") {
+    throw new Error("expected simultaneous Vapi retries to create one client A lead, calendar event, and owner alert");
+  }
 
   const routedClientALeads = await fetch(`${baseUrl}/api/leads?token=${clientAToken}`).then((res) => res.json());
   const routedClientALead = routedClientALeads.leads.find((lead) => lead.callId === routedClientACallId);
