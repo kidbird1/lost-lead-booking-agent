@@ -127,7 +127,7 @@ Deferred means “not needed for the basic paid service yet,” not “never.”
 - Custom mobile app: use WhatsApp instead.
 - Telegram: optional later, after WhatsApp operation is proven.
 - CRM integration: the lead viewer and exports are enough for initial pilots.
-- Automated billing: invoice the first pilots manually, then connect the chosen payment company after its exact provider and workflow are confirmed.
+- Automated billing: invoice the first pilots manually, then add Stripe Link after the core service is reliable and the billing workflow is defined.
 - Customer self-service dashboard.
 - Advanced analytics and reporting.
 - Complex calendar and dispatch automation.
