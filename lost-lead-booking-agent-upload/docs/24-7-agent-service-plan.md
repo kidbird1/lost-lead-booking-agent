@@ -24,7 +24,7 @@ Render hosts the always-on backend. WhatsApp is the operator interface; it does 
 - Human review: emergencies, unclear requests, final booking confirmation, and exhausted failures.
 - Success metric: missed calls converted into qualified leads or appointment requests.
 
-## Current Grade — 6.5/10
+## Current Grade — 7/10
 
 ### Working
 
@@ -37,11 +37,11 @@ Render hosts the always-on backend. WhatsApp is the operator interface; it does 
 - [x] Operator clients and Issues pages
 - [x] Local tenant-isolation smoke tests
 - [x] Owner-alert retries deployed on Render
+- [x] Concurrent Vapi booking deliveries serialized by tenant and call ID
 
 ### Why It Is Not Yet 24/7 Production Grade
 
-- Critical failures do not proactively notify the operator.
-- Duplicate prevention is not atomic in Postgres.
+- Operator WhatsApp alerts are built but remain disabled until approved.
 - Provider webhook signatures are not fully verified.
 - Database backup restoration has not been tested.
 - Two real tenants have not completed the final live isolation test.
@@ -68,8 +68,8 @@ Work from top to bottom. Do not start deferred features until the definition of 
 
 ### 3. Prevent Duplicate or Misrouted Leads
 
-- [ ] Make lead creation idempotent and atomic by tenant plus provider call ID.
-- [ ] Safely handle simultaneous webhook retries.
+- [x] Serialize booking work by tenant plus provider call ID.
+- [x] Safely handle simultaneous booking webhook retries.
 - [ ] Keep unknown routes from saving under a default tenant.
 - [ ] Test two tenants receiving calls at nearly the same time.
 
