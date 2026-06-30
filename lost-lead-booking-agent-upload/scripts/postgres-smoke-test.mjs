@@ -9,6 +9,7 @@ const port = process.env.PORT || "3010";
 const baseUrl = `http://127.0.0.1:${port}`;
 const token = "db-smoke-token";
 const adminToken = "db-smoke-admin-token";
+const concurrentCallId = `call_db_concurrent_${Date.now()}`;
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -142,6 +143,35 @@ try {
   const routedTenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
   if (!routedTenantLeads.ok || !routedTenantLeads.leads.some((lead) => lead.callId === "call_db_routed_client" && lead.businessId === "db-smoke-client")) {
     throw new Error("expected saved client assistant ID to route Vapi lead to tenant");
+  }
+
+  const concurrentBody = {
+    message: {
+      type: "tool-calls",
+      call: { id: concurrentCallId, assistantId: "asst_db_smoke" },
+      toolCallList: [
+        {
+          id: "tool_db_concurrent",
+          name: "bookAppointment",
+          parameters: {
+            name: "DB Concurrent Caller",
+            phone: "+15555550190",
+            service: "tenant repair",
+            address: "33487",
+            bookedTime: "tomorrow at 3 PM",
+          },
+        },
+      ],
+    },
+  };
+  await Promise.all([
+    post("/webhooks/voice", concurrentBody),
+    post("/webhooks/voice", concurrentBody),
+  ]);
+  const concurrentTenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
+  const concurrentMatches = concurrentTenantLeads.leads.filter((lead) => lead.callId === concurrentCallId);
+  if (concurrentMatches.length !== 1 || concurrentMatches[0].ownerNotificationAttempts !== 1) {
+    throw new Error("expected Postgres advisory lock to serialize duplicate Vapi deliveries");
   }
 
   const created = await post(`/leads?token=${token}`, {

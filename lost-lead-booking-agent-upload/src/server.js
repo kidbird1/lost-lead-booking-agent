@@ -13,6 +13,7 @@ const leadsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "leads.json"
 const eventsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "events.json") : new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
 const rateLimitBuckets = new Map();
+const localCallProcessingLocks = new Map();
 const ownerAlertInFlight = new Set();
 const operatorAlertInFlight = new Set();
 const mockOwnerAlertFailures = new Set();
@@ -209,6 +210,49 @@ async function enqueueJsonWrite(fileUrl, task) {
     if (fileWriteQueues.get(key) === next) fileWriteQueues.delete(key);
   }));
   return next;
+}
+
+async function withLocalCallProcessingLock(key, task) {
+  const previous = localCallProcessingLocks.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  localCallProcessingLocks.set(key, current);
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+    if (localCallProcessingLocks.get(key) === current) {
+      localCallProcessingLocks.delete(key);
+    }
+  }
+}
+
+async function withCallProcessingLock(businessId, callId, task) {
+  if (!callId) return task();
+  const key = `${businessId || "unrouted"}:${callId}`;
+  if (!postgresEnabled()) return withLocalCallProcessingLock(key, task);
+
+  const client = await databasePool().connect();
+  let locked = false;
+  try {
+    await client.query("select pg_advisory_lock(hashtextextended($1, 0))", [key]);
+    locked = true;
+    return await task();
+  } finally {
+    let releaseError;
+    if (locked) {
+      try {
+        await client.query("select pg_advisory_unlock(hashtextextended($1, 0))", [key]);
+      } catch (error) {
+        releaseError = error;
+        console.error("Could not release call processing lock");
+      }
+    }
+    client.release(releaseError);
+  }
 }
 
 async function readLeads() {
@@ -3884,7 +3928,7 @@ function bookingToolMessage(processed) {
   return "The owner has been notified for follow-up.";
 }
 
-async function processBooking(input) {
+async function processBookingUnlocked(input) {
   const normalized = normalizeLead(input);
   const tenantProfile = input.tenantProfile || await profileForBusinessId(normalized.businessId);
   const schedule = buildAppointmentSchedule(normalized, tenantProfile);
@@ -3938,6 +3982,12 @@ async function processBooking(input) {
     : { mode: "skipped", reason: "not_booked" };
 
   return { lead, calendar, ownerNotification, customerConfirmation };
+}
+
+async function processBooking(input) {
+  const normalized = normalizeLead(input);
+  const callId = input.callId || normalized.callId || "";
+  return withCallProcessingLock(normalized.businessId, callId, () => processBookingUnlocked(input));
 }
 
 function parseToolParameters(toolCall) {

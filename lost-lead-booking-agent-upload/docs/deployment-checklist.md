@@ -155,3 +155,9 @@ OPERATOR_WHATSAPP_NUMBER=
 
 When enabled, the operator receives one sanitized alert for an exhausted owner notification or an unknown tenant route. Keep alerts off until the destination is approved and one test-mode alert is verified.
 
+## Concurrent Webhook Safety
+
+Booking work is serialized by tenant ID and provider call ID. Postgres uses an advisory lock so simultaneous Vapi deliveries wait, re-check the saved lead, and avoid duplicate leads, calendar actions, and owner notifications.
+
+The Postgres smoke test includes this concurrency check when a local `DATABASE_URL` is available.
+
