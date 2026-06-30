@@ -14,6 +14,7 @@ const eventsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "events.jso
 const fileWriteQueues = new Map();
 const rateLimitBuckets = new Map();
 const ownerAlertInFlight = new Set();
+const operatorAlertInFlight = new Set();
 const mockOwnerAlertFailures = new Set();
 const { Pool } = pg;
 let dbPool;
@@ -787,6 +788,10 @@ function systemStatusSnapshot(req, url, options = {}) {
   const smsReady = twilioCoreReady && envIsSet("TWILIO_PHONE_NUMBER");
   const whatsappReady = twilioCoreReady && envIsSet("TWILIO_WHATSAPP_FROM");
   const ownerReady = envIsSet("OWNER_WHATSAPP_NUMBER") || envIsSet("OWNER_PHONE_NUMBER");
+  const operatorAlertsReady = operatorAlertsEnabled()
+    && messagingLive
+    && envIsSet("OPERATOR_WHATSAPP_NUMBER")
+    && whatsappReady;
   const googleReady = googleCalendarMockEnabled() || envIsSet("GOOGLE_CLIENT_ID")
     && envIsSet("GOOGLE_CLIENT_SECRET")
     && envIsSet("GOOGLE_REFRESH_TOKEN")
@@ -889,6 +894,16 @@ function systemStatusSnapshot(req, url, options = {}) {
         detail: messagingLive
           ? "Requires owner phone/WhatsApp and a Twilio sender."
           : "SEND_LIVE_MESSAGES is off.",
+      },
+      {
+        key: "operator_alerts",
+        label: "Operator WhatsApp alerts",
+        status: operatorAlertsReady ? "ready" : "off",
+        detail: operatorAlertsReady
+          ? "Critical failures use the configured operator WhatsApp destination."
+          : operatorAlertsEnabled()
+            ? "Operator alerts are enabled but live WhatsApp messaging is not fully configured."
+            : "ENABLE_OPERATOR_ALERTS is off. Critical failures remain visible on the Issues page.",
       },
       {
         key: "sms_sender",
@@ -1417,7 +1432,8 @@ function publicEvent(event) {
     provider: event.provider || "",
     type: event.type || "",
     summary: event.summary || event.raw?.message?.type || event.raw?.type || "",
-    callId: event.raw?.message?.call?.id
+    callId: event.callId
+      || event.raw?.message?.call?.id
       || event.raw?.message?.callId
       || event.raw?.CallSid
       || event.raw?.callSid
@@ -3677,6 +3693,76 @@ async function recordOwnerNotification(lead, result) {
   return await updateStoredLead(lead.id, ownerNotificationFields(result, lead)) || lead;
 }
 
+function operatorAlertsEnabled() {
+  return process.env.ENABLE_OPERATOR_ALERTS === "true";
+}
+
+function operatorAlertKey(event) {
+  return event.operatorAlertKey || event.raw?.operatorAlertKey || "";
+}
+
+async function operatorAlertAlreadySent(key) {
+  const events = await readEvents();
+  return events.some((event) => operatorAlertKey(event) === key
+    && (event.type === "operator_alert_sent"
+      || (process.env.NODE_ENV === "test" && event.type === "operator_alert_test")));
+}
+
+async function sendOperatorAlert({ key, businessId, type, title, detail, callId = "", leadId = "" }) {
+  if (!operatorAlertsEnabled()) return { mode: "disabled" };
+  if (!key || operatorAlertInFlight.has(key) || await operatorAlertAlreadySent(key)) {
+    return { mode: "skipped", reason: "duplicate_operator_alert" };
+  }
+
+  operatorAlertInFlight.add(key);
+  try {
+    const to = String(process.env.OPERATOR_WHATSAPP_NUMBER || "").trim();
+    const body = [
+      "Lost Lead critical alert",
+      `Client: ${businessId || "unrouted"}`,
+      `Type: ${type}`,
+      `Problem: ${title}`,
+      detail ? `Details: ${detail}` : "",
+      callId ? `Call: ${callId}` : "",
+      "Review the operator Issues page.",
+    ].filter(Boolean).join("\n");
+
+    let result;
+    if (!to) {
+      result = { mode: "error", error: "missing_operator_whatsapp_number", channel: "whatsapp" };
+    } else {
+      try {
+        result = await sendTwilioMessage({ to, body, channel: "whatsapp" });
+      } catch {
+        result = { mode: "error", error: "operator_alert_transport_error", channel: "whatsapp" };
+      }
+    }
+
+    const eventType = result.mode === "live"
+      ? "operator_alert_sent"
+      : result.mode === "test"
+        ? "operator_alert_test"
+        : "operator_alert_failed";
+    await saveEvent({
+      provider: "operator_whatsapp",
+      type: eventType,
+      businessId: businessId || "unrouted",
+      callId,
+      summary: `${title}: ${result.mode}`,
+      raw: {
+        operatorAlertKey: key,
+        alertType: type,
+        leadId,
+        mode: result.mode,
+        error: result.error || "",
+      },
+    });
+    return result;
+  } finally {
+    operatorAlertInFlight.delete(key);
+  }
+}
+
 async function attemptOwnerNotification(lead) {
   if (!lead?.id || ownerAlertInFlight.has(lead.id)) {
     return { notification: { mode: "skipped", reason: "owner_alert_in_flight" }, lead };
@@ -3691,6 +3777,18 @@ async function attemptOwnerNotification(lead) {
       notification = { mode: "error", error: "owner_alert_transport_error" };
     }
     const updatedLead = await recordOwnerNotification(lead, notification);
+    if (notification.mode === "error"
+      && Number(updatedLead?.ownerNotificationAttempts || 0) >= ownerAlertMaxAttempts()) {
+      await sendOperatorAlert({
+        key: `owner-alert:${lead.id}`,
+        businessId: lead.businessId,
+        type: "owner_alert_failed",
+        title: "Owner alert failed permanently",
+        detail: "Owner notification attempts were exhausted.",
+        callId: lead.callId,
+        leadId: lead.id,
+      });
+    }
     return { notification, lead: updatedLead || lead };
   } finally {
     ownerAlertInFlight.delete(lead.id);
@@ -4024,10 +4122,25 @@ async function handleVapiWebhook(body) {
   const routingIsConfigured = postgresEnabled() || configuredClientProfiles().length > 0;
 
   if (hasRoutingHint && routingIsConfigured && !tenantProfile) {
-    await saveEvent({
+    const routeEvent = await saveEvent({
       provider: "vapi",
       type: "tenant_route_failed",
+      businessId: "unrouted",
+      callId,
       raw: { type, routingHints, body },
+    });
+    const routeKeyHint = callId
+      || routingHints.assistantId
+      || routingHints.phoneNumber
+      || routingHints.businessId
+      || routeEvent.id;
+    await sendOperatorAlert({
+      key: `tenant-route:${privateTokenHash(routeKeyHint).slice(0, 24)}`,
+      businessId: "unrouted",
+      type: "tenant_route_failed",
+      title: "Vapi call did not match a tenant",
+      detail: "Review the saved Vapi assistant ID, phone number, or client metadata.",
+      callId,
     });
     return {
       ok: false,

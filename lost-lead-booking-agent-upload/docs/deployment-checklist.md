@@ -144,3 +144,14 @@ OWNER_ALERT_WORKER_INTERVAL_SECONDS=30
 
 Retries use bounded exponential backoff. After the final failed attempt, the lead remains visible as a critical issue for operator review.
 
+## Operator WhatsApp Alerts
+
+Critical alerts reuse the existing Twilio WhatsApp sender and are disabled by default:
+
+```text
+ENABLE_OPERATOR_ALERTS=false
+OPERATOR_WHATSAPP_NUMBER=
+```
+
+When enabled, the operator receives one sanitized alert for an exhausted owner notification or an unknown tenant route. Keep alerts off until the destination is approved and one test-mode alert is verified.
+

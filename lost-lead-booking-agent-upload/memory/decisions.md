@@ -70,3 +70,5 @@
 - The basic operator experience should use the existing WhatsApp setup instead of a custom mobile app. Telegram, CRM, and payment-company integration remain deferred until reliable paid pilots prove a need.
 - `docs/24-7-agent-service-plan.md` is the ordered build contract for reaching a low-touch, two-tenant paid service.
 - Future payment integration will use Stripe Link. It remains deferred until the core 24/7 service is reliable and the billing workflow is defined.
+- Critical operator alerts reuse the existing Twilio WhatsApp path, remain disabled by default, contain no customer details, and are deduplicated by failure key.
+- Unknown tenant routes are recorded under `unrouted`, never under a default tenant.

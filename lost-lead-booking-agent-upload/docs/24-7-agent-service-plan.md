@@ -24,7 +24,7 @@ Render hosts the always-on backend. WhatsApp is the operator interface; it does 
 - Human review: emergencies, unclear requests, final booking confirmation, and exhausted failures.
 - Success metric: missed calls converted into qualified leads or appointment requests.
 
-## Current Grade — 6/10
+## Current Grade — 6.5/10
 
 ### Working
 
@@ -36,11 +36,10 @@ Render hosts the always-on backend. WhatsApp is the operator interface; it does 
 - [x] Duplicate-call protection for normal webhook flow
 - [x] Operator clients and Issues pages
 - [x] Local tenant-isolation smoke tests
-- [x] Owner-alert retry code and tests on PR #25
+- [x] Owner-alert retries deployed on Render
 
 ### Why It Is Not Yet 24/7 Production Grade
 
-- Retry code is not deployed yet.
 - Critical failures do not proactively notify the operator.
 - Duplicate prevention is not atomic in Postgres.
 - Provider webhook signatures are not fully verified.
@@ -53,16 +52,17 @@ Work from top to bottom. Do not start deferred features until the definition of 
 
 ### 1. Ship Reliable Owner Alerts
 
-- [ ] Finish review of PR #25 without CodeRabbit.
-- [ ] Merge and deploy owner-alert retry changes.
-- [ ] Confirm the deployed commit in `/health`.
+- [x] Finish local review of PR #25 without CodeRabbit.
+- [x] Merge and deploy owner-alert retry changes.
+- [x] Confirm deployed commit `d709aca` in `/health`.
 - [ ] Verify retry state without sending an unapproved live message.
 
 ### 2. Wake the Operator Only When Needed
 
-- [ ] Use the existing WhatsApp setup as the operator alert destination.
-- [ ] Alert on exhausted owner notifications, unknown tenant routes, database failures, and repeated webhook failures.
-- [ ] Deduplicate operator alerts so one failure does not create message spam.
+- [x] Use the existing WhatsApp setup as the operator alert destination.
+- [x] Alert on exhausted owner notifications and unknown tenant routes.
+- [ ] Alert on database failures and repeated webhook failures.
+- [x] Deduplicate implemented operator alerts so one failure does not create message spam.
 - [ ] Add a daily summary: calls, leads, successful alerts, failures, and unresolved issues.
 - [ ] Keep live outbound alerts disabled until explicitly approved.
 

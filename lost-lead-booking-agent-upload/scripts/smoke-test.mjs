@@ -132,6 +132,8 @@ const server = spawn(process.execPath, ["src/server.js"], {
     OWNER_ALERT_MAX_ATTEMPTS: "3",
     OWNER_ALERT_RETRY_BASE_SECONDS: "0.02",
     OWNER_ALERT_WORKER_INTERVAL_SECONDS: "0.02",
+    ENABLE_OPERATOR_ALERTS: "true",
+    OPERATOR_WHATSAPP_NUMBER: "+15555550199",
     BUSINESS_TIMEZONE: "America/New_York",
     BUSINESS_HOURS_START: "08:00",
     BUSINESS_HOURS_END: "18:00",
@@ -426,6 +428,26 @@ try {
   if (clientAIssuesAfterFailure.issues.some((issue) => issue.leadId === exhaustedOwnerAlertLead.id)) {
     throw new Error("expected client A not to see client B owner alert failure");
   }
+  const operatorEventsAfterFailure = await fetch(`${baseUrl}/api/events?token=smoke-admin-token`).then((res) => res.json());
+  const exhaustedAlertEvents = operatorEventsAfterFailure.events.filter((event) => event.type === "operator_alert_test"
+    && event.businessId === "client-b-hvac"
+    && event.callId === exhaustedOwnerAlertCallId);
+  if (exhaustedAlertEvents.length !== 1 || !exhaustedAlertEvents[0].summary.includes("Owner alert failed permanently")) {
+    throw new Error("expected one sanitized operator WhatsApp alert for exhausted client B retries");
+  }
+  const repeatedManualAlert = await fetch(`${baseUrl}/leads/notify-owner?token=${clientBToken}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: exhaustedOwnerAlertLead.id }),
+  });
+  if (repeatedManualAlert.status !== 400) {
+    throw new Error("expected repeated failed owner notification to report failure");
+  }
+  const operatorEventsAfterDuplicate = await fetch(`${baseUrl}/api/events?token=smoke-admin-token`).then((res) => res.json());
+  if (operatorEventsAfterDuplicate.events.filter((event) => event.type === "operator_alert_test"
+    && event.callId === exhaustedOwnerAlertCallId).length !== 1) {
+    throw new Error("expected exhausted owner alert notification to be deduplicated");
+  }
 
   const missingAdminClient = await fetch(`${baseUrl}/api/leads?token=smoke-admin-token&clientId=missing-client`);
   if (missingAdminClient.status !== 404) {
@@ -532,6 +554,24 @@ try {
   });
   if (unknownRouteResult.ok !== false || unknownRouteResult.error !== "client_route_not_found") {
     throw new Error("expected unknown tenant route to fail safely");
+  }
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "tool-calls",
+      call: { id: unknownRouteCallId, assistantId: "asst_unknown" },
+      toolCallList: [],
+    },
+  });
+  const unknownRouteEvents = await fetch(`${baseUrl}/api/events?token=smoke-admin-token`).then((res) => res.json());
+  const routeFailureEvents = unknownRouteEvents.events.filter((event) => event.type === "tenant_route_failed"
+    && event.callId === unknownRouteCallId);
+  const routeAlertEvents = unknownRouteEvents.events.filter((event) => event.type === "operator_alert_test"
+    && event.businessId === "unrouted"
+    && event.callId === unknownRouteCallId);
+  if (routeFailureEvents.length !== 2
+    || routeFailureEvents.some((event) => event.businessId !== "unrouted")
+    || routeAlertEvents.length !== 1) {
+    throw new Error("expected repeated unknown route failures to create one unrouted operator alert");
   }
 
   await post(webhookPath("/webhooks/voice"), {
