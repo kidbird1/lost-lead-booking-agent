@@ -14,7 +14,7 @@ Customer calls
 -> operator is alerted only when human action is needed
 ```
 
-Render hosts the always-on backend. WhatsApp or Telegram is the operator interface; it does not replace the backend.
+Render hosts the always-on backend. WhatsApp is the operator interface; it does not replace the backend.
 
 ## Buyer and Success
 
@@ -60,7 +60,7 @@ Work from top to bottom. Do not start deferred features until the definition of 
 
 ### 2. Wake the Operator Only When Needed
 
-- [ ] Add an optional operator alert destination using WhatsApp or Telegram.
+- [ ] Use the existing WhatsApp setup as the operator alert destination.
 - [ ] Alert on exhausted owner notifications, unknown tenant routes, database failures, and repeated webhook failures.
 - [ ] Deduplicate operator alerts so one failure does not create message spam.
 - [ ] Add a daily summary: calls, leads, successful alerts, failures, and unresolved issues.
@@ -124,10 +124,10 @@ The basic service is ready when:
 
 Deferred means “not needed for the basic paid service yet,” not “never.”
 
-- Custom mobile app: use WhatsApp or Telegram instead.
+- Custom mobile app: use WhatsApp instead.
+- Telegram: optional later, after WhatsApp operation is proven.
 - CRM integration: the lead viewer and exports are enough for initial pilots.
-- Automated billing: invoice the first pilots manually before linking Cash App, Venmo, Stripe, or another payment system.
-- LinkedIn automation: useful for sales later, but unrelated to answering and recovering missed calls.
+- Automated billing: invoice the first pilots manually, then connect the chosen payment company after its exact provider and workflow are confirmed.
 - Customer self-service dashboard.
 - Advanced analytics and reporting.
 - Complex calendar and dispatch automation.
