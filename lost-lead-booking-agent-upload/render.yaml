@@ -62,3 +62,5 @@ services:
         value: "60"
       - key: OWNER_ALERT_WORKER_INTERVAL_SECONDS
         value: "30"
+      - key: ENABLE_OPERATOR_ALERTS
+        value: "false"

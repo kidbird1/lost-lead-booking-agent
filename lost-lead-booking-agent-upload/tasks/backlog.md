@@ -50,6 +50,7 @@
 - [x] Add AI-native workflow and policy docs
 - [x] Add Postgres storage foundation with JSON fallback
 - [x] Add persistent bounded retries for failed owner alerts
+- [x] Add disabled-by-default operator WhatsApp alerts for exhausted owner retries and unknown tenant routes
 
 ## Phase 3 - Test
 
@@ -84,6 +85,7 @@
 - [x] Persist owner notification status for transcript-only Vapi fallback leads
 - [x] Confirm transient owner alert failures recover inside the correct tenant
 - [x] Confirm permanent owner alert failures stop at the limit and remain tenant-scoped issues
+- [x] Confirm operator WhatsApp alerts are sanitized, tenant-aware, and deduplicated without sending live messages
 - [x] Confirm Postgres smoke script skips safely without DATABASE_URL
 - [ ] Manually confirm the authenticated Demo Roofing production Issues page
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
