@@ -56,3 +56,9 @@ services:
         value: "180"
       - key: RATE_LIMIT_DEFAULT_PER_MINUTE
         value: "300"
+      - key: OWNER_ALERT_MAX_ATTEMPTS
+        value: "5"
+      - key: OWNER_ALERT_RETRY_BASE_SECONDS
+        value: "60"
+      - key: OWNER_ALERT_WORKER_INTERVAL_SECONDS
+        value: "30"

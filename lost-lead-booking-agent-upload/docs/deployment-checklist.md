@@ -132,3 +132,15 @@ Keep `SEND_LIVE_CALENDAR=false` until using a test calendar.
 - [ ] emergency call does not book or promise arrival
 - [ ] outside-area call goes to owner follow-up
 
+## Owner Alert Retries
+
+Failed owner notifications retry automatically using persistent lead state. Defaults:
+
+```text
+OWNER_ALERT_MAX_ATTEMPTS=5
+OWNER_ALERT_RETRY_BASE_SECONDS=60
+OWNER_ALERT_WORKER_INTERVAL_SECONDS=30
+```
+
+Retries use bounded exponential backoff. After the final failed attempt, the lead remains visible as a critical issue for operator review.
+

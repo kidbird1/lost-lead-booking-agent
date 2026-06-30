@@ -13,6 +13,8 @@ const spokenTimeCallId = `call_spoken_time_${Date.now()}`;
 const vagueTimeCallId = `call_vague_time_${Date.now()}`;
 const availabilityCallId = `call_availability_${Date.now()}`;
 const routedClientACallId = `call_routed_client_a_${Date.now()}`;
+const retryOwnerAlertCallId = `call_owner_alert_retry_${Date.now()}`;
+const exhaustedOwnerAlertCallId = `call_owner_alert_exhausted_${Date.now()}`;
 const unknownRouteCallId = `call_unknown_route_${Date.now()}`;
 const fallbackCallId = `call_fallback_${Date.now()}`;
 const businessProfile = {
@@ -71,6 +73,16 @@ async function waitForHealth(timeoutMs = 10000) {
   throw lastError || new Error("health check timed out");
 }
 
+async function waitForValue(load, matches, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = await load();
+    if (matches(value)) return value;
+    await wait(20);
+  }
+  throw new Error("timed out waiting for expected value");
+}
+
 async function post(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
@@ -115,6 +127,11 @@ const server = spawn(process.execPath, ["src/server.js"], {
     CHECK_CALENDAR_AVAILABILITY: "true",
     MOCK_GOOGLE_CALENDAR: "true",
     MOCK_GOOGLE_CALENDAR_BUSY_CALL_IDS: busySlotCallId,
+    MOCK_OWNER_ALERT_FAIL_ONCE_CALL_IDS: retryOwnerAlertCallId,
+    MOCK_OWNER_ALERT_ALWAYS_FAIL_CALL_IDS: exhaustedOwnerAlertCallId,
+    OWNER_ALERT_MAX_ATTEMPTS: "3",
+    OWNER_ALERT_RETRY_BASE_SECONDS: "0.02",
+    OWNER_ALERT_WORKER_INTERVAL_SECONDS: "0.02",
     BUSINESS_TIMEZONE: "America/New_York",
     BUSINESS_HOURS_START: "08:00",
     BUSINESS_HOURS_END: "18:00",
@@ -322,6 +339,92 @@ try {
     .then((res) => res.json());
   if (adminClientAIssues.issues.some((issue) => issue.businessId !== "client-a-plumbing")) {
     throw new Error("expected admin client A issues to contain only client A records");
+  }
+
+  const adminClientAIssuesPage = await fetch(`${baseUrl}/admin/issues?token=smoke-admin-token&clientId=client-a-plumbing`)
+    .then((res) => res.text());
+  if (!adminClientAIssuesPage.includes("<title>Client A Plumbing Issues</title>")
+    || !adminClientAIssuesPage.includes("<h1>Client A Plumbing Issues</h1>")
+    || !adminClientAIssuesPage.includes("client-a-plumbing")
+    || adminClientAIssuesPage.includes("client-b-hvac")) {
+    throw new Error("expected admin client A issues page to show only the selected tenant");
+  }
+
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "tool-calls",
+      call: { id: retryOwnerAlertCallId, assistantId: "asst_client_a" },
+      toolCallList: [
+        {
+          id: "tool_owner_alert_retry",
+          name: "bookAppointment",
+          parameters: {
+            name: "Retry Test Caller",
+            phone: "+15555550132",
+            service: "leak repair",
+            requestedTime: "Friday morning",
+            summary: "Verify a transient owner alert failure retries safely.",
+          },
+        },
+      ],
+    },
+  });
+
+  const retriedOwnerAlertLead = await waitForValue(
+    async () => {
+      const payload = await fetch(`${baseUrl}/api/leads?token=${clientAToken}`).then((res) => res.json());
+      return payload.leads.find((lead) => lead.callId === retryOwnerAlertCallId);
+    },
+    (lead) => lead?.ownerNotificationMode === "test" && lead.ownerNotificationAttempts === 2,
+  );
+  if (retriedOwnerAlertLead.businessId !== "client-a-plumbing"
+    || retriedOwnerAlertLead.ownerNotificationError
+    || retriedOwnerAlertLead.ownerNotificationNextRetryAt) {
+    throw new Error("expected transient owner alert failure to recover inside the selected tenant");
+  }
+  const clientBAfterRetry = await fetch(`${baseUrl}/api/leads?token=${clientBToken}`).then((res) => res.json());
+  if (clientBAfterRetry.leads.some((lead) => lead.callId === retryOwnerAlertCallId)) {
+    throw new Error("expected retried owner alert lead to remain isolated from client B");
+  }
+
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "tool-calls",
+      call: { id: exhaustedOwnerAlertCallId, assistantId: "asst_client_b" },
+      toolCallList: [
+        {
+          id: "tool_owner_alert_exhausted",
+          name: "bookAppointment",
+          parameters: {
+            name: "Exhausted Retry Caller",
+            phone: "+15555550133",
+            service: "AC repair",
+            requestedTime: "Friday afternoon",
+            summary: "Verify permanent owner alert failure stops safely.",
+          },
+        },
+      ],
+    },
+  });
+
+  const exhaustedOwnerAlertLead = await waitForValue(
+    async () => {
+      const payload = await fetch(`${baseUrl}/api/leads?token=${clientBToken}`).then((res) => res.json());
+      return payload.leads.find((lead) => lead.callId === exhaustedOwnerAlertCallId);
+    },
+    (lead) => lead?.ownerNotificationMode === "error" && lead.ownerNotificationAttempts === 3,
+  );
+  if (exhaustedOwnerAlertLead.ownerNotificationNextRetryAt) {
+    throw new Error("expected permanent owner alert failure to stop after the attempt limit");
+  }
+  const clientBFailureIssues = await fetch(`${baseUrl}/api/issues?token=${clientBToken}`).then((res) => res.json());
+  if (!clientBFailureIssues.issues.some((issue) => issue.type === "owner_alert_failed" && issue.leadId === exhaustedOwnerAlertLead.id)
+    || clientBFailureIssues.issues.some((issue) => issue.businessId !== "client-b-hvac")) {
+    throw new Error("expected exhausted owner alert failure to remain visible only to client B");
+  }
+  const clientAIssuesAfterFailure = await fetch(`${baseUrl}/api/issues?token=${clientAToken}`).then((res) => res.json());
+  if (clientAIssuesAfterFailure.issues.some((issue) => issue.leadId === exhaustedOwnerAlertLead.id)) {
+    throw new Error("expected client A not to see client B owner alert failure");
   }
 
   const missingAdminClient = await fetch(`${baseUrl}/api/leads?token=smoke-admin-token&clientId=missing-client`);
@@ -587,6 +690,9 @@ try {
   }
   if (endCallFallbackLead.address !== "69773" || !endCallFallbackLead.bookedTime.toLowerCase().includes("tomorrow at three pm")) {
     throw new Error("expected fallback lead to extract ZIP and requested time");
+  }
+  if (endCallFallbackLead.ownerNotificationMode !== "test") {
+    throw new Error("expected transcript-only fallback to record owner notification status");
   }
 
   const locationFallbackCallId = `smoke_location_fallback_${Date.now()}`;

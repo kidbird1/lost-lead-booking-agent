@@ -13,9 +13,12 @@ const leadsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "leads.json"
 const eventsFile = process.env.DATA_DIR ? join(process.env.DATA_DIR, "events.json") : new URL("../data/events.json", import.meta.url);
 const fileWriteQueues = new Map();
 const rateLimitBuckets = new Map();
+const ownerAlertInFlight = new Set();
+const mockOwnerAlertFailures = new Set();
 const { Pool } = pg;
 let dbPool;
 let dbReadyPromise;
+let ownerAlertWorkerBusy = false;
 const defaultBusinessTimezone = "America/New_York";
 const defaultBusinessName = "Demo Home Services";
 const defaultAssistantName = "Riley";
@@ -1397,6 +1400,9 @@ function publicLead(lead) {
     ownerNotificationChannel: lead.ownerNotificationChannel || "",
     ownerNotificationStatus: lead.ownerNotificationStatus || "",
     ownerNotificationError: lead.ownerNotificationError || "",
+    ownerNotificationAttempts: Number(lead.ownerNotificationAttempts || 0),
+    ownerNotificationLastAttemptAt: lead.ownerNotificationLastAttemptAt || "",
+    ownerNotificationNextRetryAt: lead.ownerNotificationNextRetryAt || "",
     summary: lead.summary || "",
     followUpNote: lead.followUpNote || "",
     followUpHistory: Array.isArray(lead.followUpHistory) ? lead.followUpHistory : [],
@@ -1634,6 +1640,9 @@ function leadsCsv(leads) {
     "ownerNotificationChannel",
     "ownerNotificationStatus",
     "ownerNotificationError",
+    "ownerNotificationAttempts",
+    "ownerNotificationLastAttemptAt",
+    "ownerNotificationNextRetryAt",
     "summary",
     "followUpNote",
     "followUpHistory",
@@ -2950,8 +2959,7 @@ async function notifyOwnerForLead(id) {
   const lead = await findLeadById(id);
   if (!lead) return { ok: false, error: "lead_not_found" };
 
-  const notification = await sendOwnerNotification(lead);
-  const updatedLead = await recordOwnerNotification(lead, notification);
+  const { notification, lead: updatedLead } = await attemptOwnerNotification(lead);
   return {
     ok: notification.mode !== "error",
     notification,
@@ -3563,6 +3571,26 @@ async function createCalendarBooking(lead) {
 }
 
 async function sendOwnerNotification(lead) {
+  const mockFailureCallIds = process.env.NODE_ENV === "test"
+    ? String(process.env.MOCK_OWNER_ALERT_FAIL_ONCE_CALL_IDS || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+  const mockAlwaysFailCallIds = process.env.NODE_ENV === "test"
+    ? String(process.env.MOCK_OWNER_ALERT_ALWAYS_FAIL_CALL_IDS || "")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
+    : [];
+  if (lead.callId && mockAlwaysFailCallIds.includes(lead.callId)) {
+    return { mode: "error", error: "mock_owner_alert_failure" };
+  }
+  if (lead.callId && mockFailureCallIds.includes(lead.callId) && !mockOwnerAlertFailures.has(lead.callId)) {
+    mockOwnerAlertFailures.add(lead.callId);
+    return { mode: "error", error: "mock_owner_alert_failure" };
+  }
+
   const profile = await profileForBusinessId(lead.businessId);
   const message = [
     lead.status === "booked"
@@ -3579,32 +3607,127 @@ async function sendOwnerNotification(lead) {
 
   const ownerWhatsApp = profile.ownerWhatsApp || process.env.OWNER_WHATSAPP_NUMBER;
   const ownerSms = profile.ownerPhone || process.env.OWNER_PHONE_NUMBER;
+  let whatsappFailure = null;
 
   if (ownerWhatsApp) {
-    const result = await sendTwilioMessage({ to: ownerWhatsApp, body: message, channel: "whatsapp" });
+    let result;
+    try {
+      result = await sendTwilioMessage({ to: ownerWhatsApp, body: message, channel: "whatsapp" });
+    } catch {
+      result = { mode: "error", error: "owner_alert_transport_error", channel: "whatsapp" };
+    }
     if (result.mode !== "error") return { ...result, message };
+    whatsappFailure = result;
   }
 
   if (ownerSms) {
-    const result = await sendTwilioMessage({ to: ownerSms, body: message, channel: "sms" });
+    let result;
+    try {
+      result = await sendTwilioMessage({ to: ownerSms, body: message, channel: "sms" });
+    } catch {
+      result = { mode: "error", error: "owner_alert_transport_error", channel: "sms" };
+    }
     return { ...result, message };
   }
 
+  if (whatsappFailure) return { ...whatsappFailure, message };
   return { mode: "test", message };
 }
 
-function ownerNotificationFields(result = {}) {
+function ownerAlertMaxAttempts() {
+  const configured = Number(process.env.OWNER_ALERT_MAX_ATTEMPTS || 5);
+  return Number.isInteger(configured) && configured > 0 ? Math.min(configured, 20) : 5;
+}
+
+function ownerAlertRetryBaseMs() {
+  const configured = Number(process.env.OWNER_ALERT_RETRY_BASE_SECONDS || 60) * 1000;
+  const minimum = process.env.NODE_ENV === "test" ? 10 : 1000;
+  return Number.isFinite(configured) && configured >= minimum ? configured : 60_000;
+}
+
+function ownerAlertWorkerIntervalMs() {
+  const configured = Number(process.env.OWNER_ALERT_WORKER_INTERVAL_SECONDS || 30) * 1000;
+  const minimum = process.env.NODE_ENV === "test" ? 10 : 1000;
+  return Number.isFinite(configured) && configured >= minimum ? configured : 30_000;
+}
+
+function ownerAlertRetryDelayMs(attempts) {
+  return Math.min(ownerAlertRetryBaseMs() * (2 ** Math.max(0, attempts - 1)), 60 * 60 * 1000);
+}
+
+function ownerNotificationFields(result = {}, lead = {}) {
+  const attempts = Number(lead.ownerNotificationAttempts || 0) + 1;
+  const shouldRetry = result.mode === "error" && attempts < ownerAlertMaxAttempts();
+  const now = new Date();
   return {
     ownerNotificationMode: result.mode || "",
     ownerNotificationChannel: result.channel || "",
     ownerNotificationStatus: result.status || "",
     ownerNotificationError: result.error || result.payload?.message || result.reason || "",
+    ownerNotificationAttempts: attempts,
+    ownerNotificationLastAttemptAt: now.toISOString(),
+    ownerNotificationNextRetryAt: shouldRetry
+      ? new Date(now.getTime() + ownerAlertRetryDelayMs(attempts)).toISOString()
+      : "",
   };
 }
 
 async function recordOwnerNotification(lead, result) {
   if (!lead?.id) return lead;
-  return await updateStoredLead(lead.id, ownerNotificationFields(result)) || lead;
+  return await updateStoredLead(lead.id, ownerNotificationFields(result, lead)) || lead;
+}
+
+async function attemptOwnerNotification(lead) {
+  if (!lead?.id || ownerAlertInFlight.has(lead.id)) {
+    return { notification: { mode: "skipped", reason: "owner_alert_in_flight" }, lead };
+  }
+
+  ownerAlertInFlight.add(lead.id);
+  try {
+    let notification;
+    try {
+      notification = await sendOwnerNotification(lead);
+    } catch {
+      notification = { mode: "error", error: "owner_alert_transport_error" };
+    }
+    const updatedLead = await recordOwnerNotification(lead, notification);
+    return { notification, lead: updatedLead || lead };
+  } finally {
+    ownerAlertInFlight.delete(lead.id);
+  }
+}
+
+function ownerAlertRetryDue(lead, now = Date.now()) {
+  if (lead.ownerNotificationMode !== "error") return false;
+  const attempts = Number(lead.ownerNotificationAttempts || 0);
+  if (attempts >= ownerAlertMaxAttempts()) return false;
+  const retryAt = Date.parse(lead.ownerNotificationNextRetryAt || "");
+  if (Number.isFinite(retryAt)) return retryAt <= now;
+  return attempts === 0;
+}
+
+async function retryFailedOwnerNotifications() {
+  if (ownerAlertWorkerBusy) return;
+  ownerAlertWorkerBusy = true;
+  try {
+    const leads = await readLeads();
+    const due = leads.filter((lead) => ownerAlertRetryDue(lead)).slice(0, 25);
+    for (const lead of due) {
+      await attemptOwnerNotification(lead);
+    }
+  } catch (error) {
+    console.error("Owner alert retry worker failed", error?.name || "Error");
+  } finally {
+    ownerAlertWorkerBusy = false;
+  }
+}
+
+function startOwnerAlertRetryWorker() {
+  const worker = setInterval(() => {
+    void retryFailedOwnerNotifications();
+  }, ownerAlertWorkerIntervalMs());
+  worker.unref();
+  void retryFailedOwnerNotifications();
 }
 
 async function sendCustomerConfirmation(lead) {
@@ -3709,8 +3832,9 @@ async function processBooking(input) {
     }) || lead;
   }
 
-  const ownerNotification = await sendOwnerNotification(lead);
-  lead = await recordOwnerNotification(lead, ownerNotification);
+  const ownerAttempt = await attemptOwnerNotification(lead);
+  const ownerNotification = ownerAttempt.notification;
+  lead = ownerAttempt.lead;
   const customerConfirmation = lead.status === "booked"
     ? await sendCustomerConfirmation(lead)
     : { mode: "skipped", reason: "not_booked" };
@@ -3965,7 +4089,7 @@ async function handleVapiWebhook(body) {
         transcript,
         callId,
       }));
-      const notification = await sendOwnerNotification(lead);
+      const { notification } = await attemptOwnerNotification(lead);
       return { ok: true, type, leadId: lead.id, notification };
     }
   }
@@ -4022,8 +4146,7 @@ async function handleTwilioRecording(body = {}) {
     callId,
     raw: body,
   }));
-  const notification = await sendOwnerNotification(lead);
-  await recordOwnerNotification(lead, notification);
+  const { notification } = await attemptOwnerNotification(lead);
   return { ok: true, leadId: lead.id, notification };
 }
 
@@ -4501,6 +4624,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 await ensureStore();
+startOwnerAlertRetryWorker();
 
 server.listen(port, () => {
   console.log(`Lost Lead Booking Agent listening on ${port}`);
