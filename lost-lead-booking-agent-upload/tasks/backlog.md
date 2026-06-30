@@ -12,6 +12,7 @@
 - [x] Define MVP success metric
 - [x] Choose WhatsApp vs SMS behavior
 - [x] Choose voice provider
+- [x] Write ordered 24/7 Agent-as-a-Service production plan
 
 ## Phase 2 - Build
 
@@ -48,6 +49,7 @@
 - [x] Add basic rate limits for admin/API/webhook paths
 - [x] Add AI-native workflow and policy docs
 - [x] Add Postgres storage foundation with JSON fallback
+- [x] Add persistent bounded retries for failed owner alerts
 
 ## Phase 3 - Test
 
@@ -78,7 +80,12 @@
 - [x] Confirm protected single-lead detail page and API render saved lead context
 - [x] Confirm onboarding preview returns client ID, lead link, Vapi tool URL, owner setup, booking link, and test checklist
 - [x] Confirm client A token cannot view client B leads in smoke test
+- [x] Confirm tenant-scoped Issues HTML uses the selected business title and excludes other tenant IDs
+- [x] Persist owner notification status for transcript-only Vapi fallback leads
+- [x] Confirm transient owner alert failures recover inside the correct tenant
+- [x] Confirm permanent owner alert failures stop at the limit and remain tenant-scoped issues
 - [x] Confirm Postgres smoke script skips safely without DATABASE_URL
+- [ ] Manually confirm the authenticated Demo Roofing production Issues page
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing
 - [ ] Confirm customer WhatsApp/SMS sends
 - [ ] Confirm owner WhatsApp/SMS sends

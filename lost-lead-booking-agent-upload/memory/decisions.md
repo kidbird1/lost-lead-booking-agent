@@ -56,3 +56,17 @@
 - Default booking language stays conservative: the agent saves appointment requests and says the team will confirm. It should not promise a confirmed calendar booking unless live calendar booking is enabled and working.
 - Paid-pilot production work should move in small slices: first add operator auth, per-client lead viewer token isolation, rate limits, and AI-native workflows while keeping the current single-client path working.
 - Storage direction: use Postgres for paid pilots and multi-tenant Agent-as-a-Service. Keep JSON as local/demo fallback only; do not use SQLite or hardcoded client data for production.
+
+## 2026-06-29
+
+- Tenant-scoped Issues pages must be smoke-tested at the rendered HTML level: selected business title and records only, with no other tenant ID present.
+- Vapi transcript-only end-of-call fallback leads must persist the owner notification result so alert failures appear in the Issues dashboard.
+
+## 2026-06-30
+
+- Owner alert reliability uses persistent retry state on each lead so retries survive app restarts without adding another paid service.
+- Failed alerts retry with bounded exponential backoff. Successful retries clear the error; exhausted retries remain visible as tenant-scoped critical issues.
+- WhatsApp transport failures must fall back to SMS when configured. A failed WhatsApp-only alert must remain an error, never be mislabeled as test mode.
+- The basic operator experience should use the existing WhatsApp setup instead of a custom mobile app. Telegram, CRM, and payment-company integration remain deferred until reliable paid pilots prove a need.
+- `docs/24-7-agent-service-plan.md` is the ordered build contract for reaching a low-touch, two-tenant paid service.
+- Future payment integration will use Stripe Link. It remains deferred until the core 24/7 service is reliable and the billing workflow is defined.
