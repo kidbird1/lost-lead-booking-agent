@@ -67,3 +67,5 @@
 - Owner alert reliability uses persistent retry state on each lead so retries survive app restarts without adding another paid service.
 - Failed alerts retry with bounded exponential backoff. Successful retries clear the error; exhausted retries remain visible as tenant-scoped critical issues.
 - WhatsApp transport failures must fall back to SMS when configured. A failed WhatsApp-only alert must remain an error, never be mislabeled as test mode.
+- The basic operator experience should use WhatsApp or Telegram instead of a custom mobile app. CRM, LinkedIn automation, and payment-account integrations remain deferred until reliable paid pilots prove a need.
+- `docs/24-7-agent-service-plan.md` is the ordered build contract for reaching a low-touch, two-tenant paid service.

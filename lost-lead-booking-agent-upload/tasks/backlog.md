@@ -12,6 +12,7 @@
 - [x] Define MVP success metric
 - [x] Choose WhatsApp vs SMS behavior
 - [x] Choose voice provider
+- [x] Write ordered 24/7 Agent-as-a-Service production plan
 
 ## Phase 2 - Build
 
