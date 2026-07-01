@@ -736,7 +736,10 @@ async function requestAccessContextAsync(req, url) {
 async function applyAdminClientScope(req, url) {
   const access = requestAccessContext(req, url);
   const businessId = String(url.searchParams.get("clientId") || "").trim();
-  if (access.scope !== "admin" || !businessId) return { ok: true };
+  if (!businessId) return { ok: true };
+  if (access.scope !== "admin") {
+    return { ok: false, error: "unauthorized_client_scope", status: 401 };
+  }
 
   const profile = await clientProfileByBusinessId(businessId);
   if (!profile) return { ok: false, error: "client_not_found" };
@@ -4343,7 +4346,7 @@ const server = http.createServer(async (req, res) => {
     req.accessContext = await requestAccessContextAsync(req, url);
     const clientScope = await applyAdminClientScope(req, url);
     if (!clientScope.ok) {
-      return json(res, 404, { ok: false, error: clientScope.error });
+      return json(res, clientScope.status || 404, { ok: false, error: clientScope.error });
     }
     if (isRateLimited(req, url)) {
       return json(res, 429, { ok: false, error: "rate_limited" });
