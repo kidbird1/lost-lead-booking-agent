@@ -226,6 +226,16 @@ try {
     throw new Error("expected legacy lead viewer token to be blocked from saving clients");
   }
 
+  const legacyTenantSelection = await fetch(`${baseUrl}/admin/leads?token=${leadViewerToken}&clientId=client-a-plumbing`);
+  if (legacyTenantSelection.status !== 401) {
+    throw new Error("expected legacy lead viewer token to be blocked from selecting a tenant");
+  }
+
+  const clientTenantSelection = await fetch(`${baseUrl}/api/leads?token=${clientAToken}&clientId=client-b-hvac`);
+  if (clientTenantSelection.status !== 401) {
+    throw new Error("expected client token to be blocked from selecting another tenant");
+  }
+
   const clientsList = await fetch(`${baseUrl}/api/clients?token=smoke-admin-token`).then((res) => res.json());
   if (!clientsList.ok || clientsList.storage !== "env" || clientsList.clients.length !== clients.length) {
     throw new Error("expected client list API to fall back to env clients without Postgres");
