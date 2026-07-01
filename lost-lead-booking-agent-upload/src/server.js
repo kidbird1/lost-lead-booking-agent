@@ -2261,6 +2261,8 @@ function renderProfilePage(req, url) {
 
 function renderOnboardingPage(req, url) {
   const profile = activeProfileForRequest(req, url);
+  const access = requestAccessContext(req, url);
+  const canManageClients = access.scope === "admin";
   const suffix = leadViewerUrlSuffix(url);
   const baseUrl = requestBaseUrl(req, url);
   const previewUrl = `/api/profile-preview${suffix}`;
@@ -2318,7 +2320,7 @@ function renderOnboardingPage(req, url) {
       </div>
       <nav class="links" aria-label="Setup links">
         <a href="${escapeHtml(profileUrl)}">Current Setup</a>
-        <a href="${escapeHtml(clientsPageUrl)}">Clients</a>
+        ${canManageClients ? `<a href="${escapeHtml(clientsPageUrl)}">Clients</a>` : ""}
         <a href="${escapeHtml(statusUrl)}">System Status</a>
       </nav>
     </section>
@@ -2358,7 +2360,7 @@ function renderOnboardingPage(req, url) {
         <textarea name="greeting">${escapeHtml(profile.greeting)}</textarea>
         <div class="actions">
           <button type="submit">Generate</button>
-          <button type="button" id="save-client">Save Client</button>
+          ${canManageClients ? '<button type="button" id="save-client">Save Client</button>' : ""}
         </div>
         <p class="status" id="status"></p>
       </form>
@@ -2476,7 +2478,7 @@ function renderOnboardingPage(req, url) {
       status.textContent = "Client saved. Copy this token now; it will not be shown again after you leave this page.";
     }
     form.addEventListener("submit", generate);
-    document.getElementById("save-client").addEventListener("click", saveClient);
+    document.getElementById("save-client")?.addEventListener("click", saveClient);
     document.querySelectorAll("[data-copy-target]").forEach((button) => {
       button.addEventListener("click", async () => {
         const target = document.getElementById(button.dataset.copyTarget);
@@ -4391,7 +4393,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && (url.pathname === "/clients" || url.pathname === "/admin/clients")) {
       const access = requestAccessContext(req, url);
-      if (!access.ok || access.scope === "client") {
+      if (!access.ok || access.scope !== "admin") {
         return html(res, 401, renderUnauthorizedLeadViewer());
       }
 
@@ -4587,7 +4589,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/clients") {
       const access = requestAccessContext(req, url);
-      if (!access.ok || access.scope === "client") {
+      if (!access.ok || access.scope !== "admin") {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 
@@ -4609,7 +4611,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/clients") {
       const access = requestAccessContext(req, url);
-      if (!access.ok || access.scope === "client") {
+      if (!access.ok || access.scope !== "admin") {
         return json(res, 401, { ok: false, error: "unauthorized" });
       }
 

@@ -179,11 +179,16 @@ try {
   if (!onboardingPage.includes("Client Onboarding") || !onboardingPage.includes("Generate")) {
     throw new Error("expected protected onboarding page to render");
   }
-  if (!onboardingPage.includes("Save Client") || !onboardingPage.includes("Private Lead Viewer Token")) {
-    throw new Error("expected onboarding page to include client save controls");
+  if (onboardingPage.includes("Save Client") || onboardingPage.includes('>Clients</a>')) {
+    throw new Error("expected legacy onboarding page to hide client management controls");
   }
-  if (!onboardingPage.includes("Clients")) {
-    throw new Error("expected onboarding page to link to clients");
+
+  const adminOnboardingPage = await fetch(`${baseUrl}/admin/onboarding?token=smoke-admin-token`)
+    .then((res) => res.text());
+  if (!adminOnboardingPage.includes("Save Client")
+    || !adminOnboardingPage.includes("Private Lead Viewer Token")
+    || !adminOnboardingPage.includes('>Clients</a>')) {
+    throw new Error("expected admin onboarding page to include client management controls");
   }
 
   const clientsPage = await fetch(`${baseUrl}/admin/clients?token=smoke-admin-token`).then((res) => res.text());
@@ -200,6 +205,25 @@ try {
   const clientScopedClientsPage = await fetch(`${baseUrl}/admin/clients?token=${clientAToken}`);
   if (clientScopedClientsPage.status !== 401) {
     throw new Error("expected client token to be blocked from operator clients page");
+  }
+
+  const legacyClientsPage = await fetch(`${baseUrl}/admin/clients?token=${leadViewerToken}`);
+  if (legacyClientsPage.status !== 401) {
+    throw new Error("expected legacy lead viewer token to be blocked from operator clients page");
+  }
+
+  const legacyClientsApi = await fetch(`${baseUrl}/api/clients?token=${leadViewerToken}`);
+  if (legacyClientsApi.status !== 401) {
+    throw new Error("expected legacy lead viewer token to be blocked from client management API");
+  }
+
+  const legacyClientSave = await fetch(`${baseUrl}/api/clients?token=${leadViewerToken}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ businessId: "forbidden-legacy-client", businessName: "Forbidden" }),
+  });
+  if (legacyClientSave.status !== 401) {
+    throw new Error("expected legacy lead viewer token to be blocked from saving clients");
   }
 
   const clientsList = await fetch(`${baseUrl}/api/clients?token=smoke-admin-token`).then((res) => res.json());
