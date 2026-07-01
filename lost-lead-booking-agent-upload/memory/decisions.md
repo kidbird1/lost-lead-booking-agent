@@ -74,3 +74,5 @@
 - Unknown tenant routes are recorded under `unrouted`, never under a default tenant.
 - Booking tool calls are serialized by tenant ID plus provider call ID. Postgres uses an advisory lock across app instances; local/demo mode uses an in-process lock.
 - Duplicate deliveries must re-check the saved lead after acquiring the lock so only one lead, calendar action, and owner notification are created.
+- Live Vapi custom tools must send `x-webhook-secret` using the Render `WEBHOOK_SHARED_SECRET`; secrets stay out of tool URLs and documentation.
+- A live authenticated Demo Roofing call verified the primary `vapi_tool` path, structured caller fields, one tenant lead, one owner notification attempt, and end-of-call duplicate suppression.

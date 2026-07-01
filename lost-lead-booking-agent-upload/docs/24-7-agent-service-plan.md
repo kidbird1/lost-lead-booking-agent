@@ -38,6 +38,7 @@ Render hosts the always-on backend. WhatsApp is the operator interface; it does 
 - [x] Local tenant-isolation smoke tests
 - [x] Owner-alert retries deployed on Render
 - [x] Concurrent Vapi booking deliveries serialized by tenant and call ID
+- [x] Live authenticated Demo Roofing `bookAppointment` verified through Render
 
 ### Why It Is Not Yet 24/7 Production Grade
 
@@ -101,6 +102,7 @@ Work from top to bottom. Do not start deferred features until the definition of 
 ### 7. Prove the Basic Service
 
 - [ ] Complete Demo Roofing production Issues-page verification.
+- [x] Run one live authenticated Demo Roofing call through the primary `vapi_tool` path.
 - [ ] Add a second test tenant with separate routing and access.
 - [ ] Run one live approved test call for each tenant.
 - [ ] Confirm no lead, event, issue, or export crosses tenant boundaries.
