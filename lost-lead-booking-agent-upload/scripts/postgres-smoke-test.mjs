@@ -116,6 +116,31 @@ try {
     throw new Error("expected saved client token to read only its tenant leads");
   }
 
+  const rotated = await post(`/api/clients/db-smoke-client/rotate-token?token=${adminToken}`, {});
+  if (!rotated.ok || !rotated.leadViewerToken || !rotated.leadViewerLink.includes(rotated.leadViewerToken)) {
+    throw new Error("expected admin to rotate a tenant private link");
+  }
+  if (rotated.leadViewerToken === savedClient.leadViewerToken) {
+    throw new Error("expected private-link rotation to generate a new token");
+  }
+
+  const oldTenantAccess = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`);
+  if (oldTenantAccess.status !== 401) {
+    throw new Error("expected the previous tenant token to be invalid after rotation");
+  }
+
+  const rotatedTenantLeads = await fetch(`${baseUrl}/api/leads?token=${rotated.leadViewerToken}`).then((res) => res.json());
+  if (!rotatedTenantLeads.ok || rotatedTenantLeads.leads.some((lead) => lead.businessId !== "db-smoke-client")) {
+    throw new Error("expected rotated tenant token to retain tenant-scoped access");
+  }
+
+  const clientRotateAttempt = await fetch(`${baseUrl}/api/clients/db-smoke-client/rotate-token?token=${rotated.leadViewerToken}`, {
+    method: "POST",
+  });
+  if (clientRotateAttempt.status !== 401) {
+    throw new Error("expected tenant token to be blocked from rotating itself");
+  }
+
   await post(`/webhooks/voice`, {
     message: {
       type: "tool-calls",
@@ -140,7 +165,7 @@ try {
     },
   });
 
-  const routedTenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
+  const routedTenantLeads = await fetch(`${baseUrl}/api/leads?token=${rotated.leadViewerToken}`).then((res) => res.json());
   if (!routedTenantLeads.ok || !routedTenantLeads.leads.some((lead) => lead.callId === "call_db_routed_client" && lead.businessId === "db-smoke-client")) {
     throw new Error("expected saved client assistant ID to route Vapi lead to tenant");
   }
@@ -168,7 +193,7 @@ try {
     post("/webhooks/voice", concurrentBody),
     post("/webhooks/voice", concurrentBody),
   ]);
-  const concurrentTenantLeads = await fetch(`${baseUrl}/api/leads?token=${savedClient.leadViewerToken}`).then((res) => res.json());
+  const concurrentTenantLeads = await fetch(`${baseUrl}/api/leads?token=${rotated.leadViewerToken}`).then((res) => res.json());
   const concurrentMatches = concurrentTenantLeads.leads.filter((lead) => lead.callId === concurrentCallId);
   if (concurrentMatches.length !== 1 || concurrentMatches[0].ownerNotificationAttempts !== 1) {
     throw new Error("expected Postgres advisory lock to serialize duplicate Vapi deliveries");

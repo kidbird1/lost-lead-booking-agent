@@ -201,6 +201,23 @@ try {
   if (!clientsPage.includes("clientId=client-a-plumbing") || !clientsPage.includes("clientId=client-b-hvac")) {
     throw new Error("expected client control room actions to open tenant-scoped views");
   }
+  if (!clientsPage.includes("Create/Rotate Private Link") || !clientsPage.includes("/rotate-token")) {
+    throw new Error("expected client control room to offer private-link rotation");
+  }
+
+  const clientScopedRotate = await fetch(`${baseUrl}/api/clients/client-a-plumbing/rotate-token?token=${clientAToken}`, {
+    method: "POST",
+  });
+  if (clientScopedRotate.status !== 401) {
+    throw new Error("expected client token to be blocked from rotating private links");
+  }
+
+  const legacyRotate = await fetch(`${baseUrl}/api/clients/client-a-plumbing/rotate-token?token=${leadViewerToken}`, {
+    method: "POST",
+  });
+  if (legacyRotate.status !== 401) {
+    throw new Error("expected legacy token to be blocked from rotating private links");
+  }
 
   const clientScopedClientsPage = await fetch(`${baseUrl}/admin/clients?token=${clientAToken}`);
   if (clientScopedClientsPage.status !== 401) {

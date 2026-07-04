@@ -89,6 +89,8 @@
 - [x] Confirm operator WhatsApp alerts are sanitized, tenant-aware, and deduplicated without sending live messages
 - [x] Confirm simultaneous Vapi deliveries create one lead and one owner notification
 - [x] Confirm live authenticated `bookAppointment` reaches Render and saves one structured Demo Roofing lead
+- [x] Add admin-only tenant private-link rotation with old-token invalidation tests
+- [ ] Deploy private-link rotation and verify Test HVAC cannot access Demo Roofing records
 - [x] Confirm Postgres smoke script skips safely without DATABASE_URL
 - [ ] Manually confirm the authenticated Demo Roofing production Issues page
 - [ ] Deploy spoken-time parsing to Render and re-test a call like Stevenson's phrasing

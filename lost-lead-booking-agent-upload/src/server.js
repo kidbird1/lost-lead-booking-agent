@@ -572,6 +572,32 @@ async function saveStoredClient(input = {}) {
   };
 }
 
+async function rotateStoredClientLeadViewerToken(businessId) {
+  if (!postgresEnabled()) {
+    return { ok: false, error: "database_not_configured" };
+  }
+
+  const leadViewerToken = generatePrivateToken();
+  await ensureDatabase();
+  const result = await databasePool().query(
+    `update clients
+       set lead_viewer_token_hash = $2,
+           updated_at = now()
+     where id = $1
+     returning id, business_name`,
+    [businessId, privateTokenHash(leadViewerToken)],
+  );
+  const row = result.rows[0];
+  if (!row) return { ok: false, error: "client_not_found" };
+
+  return {
+    ok: true,
+    businessId: row.id,
+    businessName: row.business_name,
+    leadViewerToken,
+  };
+}
+
 async function storedClientFromToken(key) {
   if (!key || !postgresEnabled()) return null;
   await ensureDatabase();
@@ -1986,6 +2012,7 @@ function renderClientsPage(clients, storage, req, url) {
         const clientLeadsUrl = `${baseUrl}/admin/leads${clientSuffix}`;
         const clientIssuesUrl = `${baseUrl}/admin/issues${clientSuffix}`;
         const clientSetupUrl = `${baseUrl}/admin/onboarding${clientSuffix}`;
+        const rotateTokenUrl = `${baseUrl}/api/clients/${encodeURIComponent(clientId)}/rotate-token${suffix}`;
         const services = Array.isArray(profile.services) && profile.services.length
           ? profile.services.join(", ")
           : "Not set";
@@ -2031,6 +2058,15 @@ function renderClientsPage(clients, storage, req, url) {
             <a href="${escapeHtml(clientLeadsUrl)}">Leads</a>
             <a href="${escapeHtml(clientIssuesUrl)}">Issues</a>
             <a href="${escapeHtml(clientSetupUrl)}">Edit Setup</a>
+            <button type="button" class="rotate-private-link" data-endpoint="${escapeHtml(rotateTokenUrl)}" data-client-id="${escapeHtml(clientId)}">Create/Rotate Private Link</button>
+          </div>
+          <div class="private-link-result" id="private-link-${escapeHtml(clientId)}" hidden>
+            <p><strong>Copy this new private link now.</strong> It will only be shown here once, and the previous link no longer works.</p>
+            <div class="private-link-row">
+              <input type="text" readonly aria-label="New private link for ${escapeHtml(client.businessName || profile.businessName || clientId)}">
+              <button type="button" class="copy-private-link">Copy Link</button>
+            </div>
+            <p class="private-link-status" aria-live="polite"></p>
           </div>
         </article>`;
       }).join("")
@@ -2064,7 +2100,8 @@ function renderClientsPage(clients, storage, req, url) {
     h1 { margin: 0; font-size: 30px; line-height: 1.1; }
     h2 { margin: 0; font-size: 20px; }
     p { margin: 8px 0 0; color: var(--muted); line-height: 1.45; }
-    a { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); text-decoration: none; }
+    a, button { border: 1px solid var(--line); border-radius: 6px; min-height: 36px; padding: 8px 12px; background: #fff; color: var(--ink); text-decoration: none; font: inherit; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .65; }
     dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 16px 0 0; }
     dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
     dd { margin: 0; overflow-wrap: anywhere; }
@@ -2085,6 +2122,11 @@ function renderClientsPage(clients, storage, req, url) {
     .badge-ready { background: #e0f0e7; color: var(--green); }
     .badge-needs_review, .badge-warning { background: #f4ead0; color: var(--gold); }
     .badge-missing { background: #f6e1df; color: var(--red); }
+    .private-link-result { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+    .private-link-result p { margin: 0 0 8px; }
+    .private-link-row { display: flex; gap: 8px; }
+    .private-link-row input { min-width: 0; flex: 1; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; background: #fff; }
+    .private-link-status { margin-top: 8px !important; }
     @media (max-width: 760px) {
       .top, .client-head { display: block; }
       .links { justify-content: start; margin-top: 14px; }
@@ -2118,6 +2160,43 @@ function renderClientsPage(clients, storage, req, url) {
       ${rows}
     </section>
   </main>
+  <script>
+    document.querySelectorAll(".rotate-private-link").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const clientId = button.dataset.clientId;
+        const result = document.getElementById("private-link-" + clientId);
+        const input = result.querySelector("input");
+        const status = result.querySelector(".private-link-status");
+        button.disabled = true;
+        status.textContent = "";
+        try {
+          const response = await fetch(button.dataset.endpoint, { method: "POST" });
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || "rotation_failed");
+          input.value = data.leadViewerLink;
+          result.hidden = false;
+          status.textContent = "New private link created. The old link is now invalid.";
+        } catch (error) {
+          result.hidden = false;
+          input.value = "";
+          status.textContent = "Could not create the private link. Please try again.";
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+
+    document.querySelectorAll(".copy-private-link").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const result = button.closest(".private-link-result");
+        const input = result.querySelector("input");
+        const status = result.querySelector(".private-link-status");
+        if (!input.value) return;
+        await navigator.clipboard.writeText(input.value);
+        status.textContent = "Private link copied.";
+      });
+    });
+  </script>
 </body>
 </html>`;
 }
@@ -4319,7 +4398,10 @@ async function handleTwilioRecording(body = {}) {
 }
 
 function json(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json" });
+  res.writeHead(status, {
+    "content-type": "application/json",
+    "cache-control": "no-store",
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -4636,6 +4718,35 @@ const server = http.createServer(async (req, res) => {
         envSnippet: profileEnvSnippet(saved.profile),
         businessProfileJson: businessProfileJson(saved.profile),
         setup,
+      });
+    }
+
+    if (req.method === "POST" && /^\/api\/clients\/[^/]+\/rotate-token$/.test(url.pathname)) {
+      const access = requestAccessContext(req, url);
+      if (!access.ok || access.scope !== "admin") {
+        return json(res, 401, { ok: false, error: "unauthorized" });
+      }
+
+      const encodedBusinessId = url.pathname
+        .replace("/api/clients/", "")
+        .replace("/rotate-token", "");
+      const businessId = decodeURIComponent(encodedBusinessId).trim();
+      if (!businessId) {
+        return json(res, 400, { ok: false, error: "client_id_required" });
+      }
+
+      const rotated = await rotateStoredClientLeadViewerToken(businessId);
+      if (!rotated.ok) {
+        const status = rotated.error === "client_not_found" ? 404 : 503;
+        return json(res, status, rotated);
+      }
+
+      return json(res, 200, {
+        ok: true,
+        businessId: rotated.businessId,
+        businessName: rotated.businessName,
+        leadViewerToken: rotated.leadViewerToken,
+        leadViewerLink: `${requestBaseUrl(req, url)}/admin/leads?token=${encodeURIComponent(rotated.leadViewerToken)}`,
       });
     }
 

@@ -76,3 +76,8 @@
 - Duplicate deliveries must re-check the saved lead after acquiring the lock so only one lead, calendar action, and owner notification are created.
 - Live Vapi custom tools must send `x-webhook-secret` using the Render `WEBHOOK_SHARED_SECRET`; secrets stay out of tool URLs and documentation.
 - A live authenticated Demo Roofing call verified the primary `vapi_tool` path, structured caller fields, one tenant lead, one owner notification attempt, and end-of-call duplicate suppression.
+
+## 2026-07-03
+
+- Tenant private lead-viewer tokens remain stored only as hashes. Operators can create or rotate a tenant link, but cannot recover an existing raw token.
+- Private-link rotation is admin-only, immediately invalidates the previous tenant token, and shows the replacement link once for copying.
