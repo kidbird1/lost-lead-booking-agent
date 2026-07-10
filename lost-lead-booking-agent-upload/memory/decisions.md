@@ -81,3 +81,7 @@
 
 - Tenant private lead-viewer tokens remain stored only as hashes. Operators can create or rotate a tenant link, but cannot recover an existing raw token.
 - Private-link rotation is admin-only, immediately invalidates the previous tenant token, and shows the replacement link once for copying.
+
+## 2026-07-10
+
+- Operator Issues must not hide valid scheduling follow-ups behind old issue history. The issue snapshot now returns all tenant-visible issues, sorted by severity and newest first within each severity.

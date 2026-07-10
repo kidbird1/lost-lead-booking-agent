@@ -1519,10 +1519,6 @@ function issueSeverity(issue) {
   return severityOrder[issue.severity] ?? 3;
 }
 
-function issueSortKey(issue) {
-  return `${issueSeverity(issue)}:${String(issue.createdAt || "").padStart(30, "0")}`;
-}
-
 function issueForLead(lead) {
   const publicItem = publicLead(lead);
   if (publicItem.ownerNotificationMode === "error") {
@@ -1631,8 +1627,11 @@ async function operatorIssues(req, url) {
     ...visibleEvents.map(issueForEvent),
   ]
     .filter(Boolean)
-    .sort((a, b) => issueSortKey(a).localeCompare(issueSortKey(b)))
-    .slice(0, 100);
+    .sort((a, b) => {
+      const severityDiff = issueSeverity(a) - issueSeverity(b);
+      if (severityDiff) return severityDiff;
+      return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    });
 
   return {
     ok: true,

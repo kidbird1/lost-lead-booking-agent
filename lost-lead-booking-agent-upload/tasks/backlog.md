@@ -38,6 +38,7 @@
 - [x] Add protected CSV lead export
 - [x] Add GitHub handoff docs for future LLM continuation
 - [x] Add protected system status page
+- [x] Keep operator Issues API from hiding valid scheduling follow-ups behind old issue history
 - [x] Add configurable data directory for persistent storage
 - [x] Add lightweight business ID metadata for future multi-client routing
 - [x] Add protected single-lead detail page
@@ -79,6 +80,7 @@
 - [x] Parse spoken times like "Friday, nine in the morning" into schedulable slots (local smoke)
 - [x] Confirm protected CSV lead export includes saved leads
 - [x] Confirm protected system status page renders
+- [x] Confirm protected Issues API reports current scheduling follow-ups even with old issue history
 - [x] Confirm protected single-lead detail page and API render saved lead context
 - [x] Confirm onboarding preview returns client ID, lead link, Vapi tool URL, owner setup, booking link, and test checklist
 - [x] Confirm client A token cannot view client B leads in smoke test
