@@ -6,6 +6,7 @@ const leadViewerToken = "smoke-token";
 const clientAToken = "smoke-client-a-token";
 const clientBToken = "smoke-client-b-token";
 const webhookSecret = "smoke-webhook-secret";
+const vapiServerSecret = "smoke-vapi-secret";
 const callId = `call_smoke_${Date.now()}`;
 const afterHoursCallId = `call_after_hours_${Date.now()}`;
 const busySlotCallId = `call_busy_slot_${Date.now()}`;
@@ -17,6 +18,8 @@ const concurrentClientACallId = `call_concurrent_client_a_${Date.now()}`;
 const retryOwnerAlertCallId = `call_owner_alert_retry_${Date.now()}`;
 const exhaustedOwnerAlertCallId = `call_owner_alert_exhausted_${Date.now()}`;
 const unknownRouteCallId = `call_unknown_route_${Date.now()}`;
+const duplicateCallId = `call_duplicate_${Date.now()}`;
+const suspendedCallId = `call_suspended_${Date.now()}`;
 const fallbackCallId = `call_fallback_${Date.now()}`;
 const businessProfile = {
   businessId: "blue-sky-plumbing",
@@ -48,6 +51,17 @@ const clients = [
     leadViewerToken: clientBToken,
     assistantId: "asst_client_b",
     phoneNumber: "+15550001002",
+  },
+  {
+    businessId: "client-c-suspended",
+    businessName: "Client C Suspended",
+    assistantName: "Sam",
+    industry: "electrical",
+    services: ["panel repair"],
+    serviceAreas: ["33487"],
+    assistantId: "asst_client_c",
+    phoneNumber: "+15550001003",
+    status: "suspended",
   },
 ];
 
@@ -87,7 +101,7 @@ async function waitForValue(load, matches, timeoutMs = 3000) {
 async function post(path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "x-vapi-secret": vapiServerSecret },
     body: JSON.stringify(body),
   });
   const payload = await response.json();
@@ -123,6 +137,7 @@ const server = spawn(process.execPath, ["src/server.js"], {
     ADMIN_TOKEN: "smoke-admin-token",
     CLIENTS_JSON: JSON.stringify(clients),
     WEBHOOK_SHARED_SECRET: webhookSecret,
+    VAPI_SERVER_SECRET: vapiServerSecret,
     SEND_LIVE_MESSAGES: "false",
     SEND_LIVE_CALENDAR: "true",
     CHECK_CALENDAR_AVAILABILITY: "true",
@@ -1028,6 +1043,97 @@ try {
   if (!busyLead) throw new Error("expected busy calendar lead to be saved");
   if (busyLead.status !== "needs_follow_up" || busyLead.scheduleReason !== "calendar_slot_unavailable") {
     throw new Error("expected busy calendar slot to need follow-up");
+  }
+
+  // --- Vapi webhook signature verification ---
+  const noHeaderResponse = await fetch(`${baseUrl}${webhookPath("/webhooks/voice")}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message: { type: "assistant-request", call: { id: "call_no_sig" } } }),
+  });
+  if (noHeaderResponse.status !== 401) {
+    throw new Error(`expected missing Vapi signature to be rejected with 401, got ${noHeaderResponse.status}`);
+  }
+
+  const wrongHeaderResponse = await fetch(`${baseUrl}${webhookPath("/webhooks/voice")}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-vapi-secret": "not-the-secret" },
+    body: JSON.stringify({ message: { type: "assistant-request", call: { id: "call_wrong_sig" } } }),
+  });
+  if (wrongHeaderResponse.status !== 401) {
+    throw new Error(`expected wrong Vapi signature to be rejected with 401, got ${wrongHeaderResponse.status}`);
+  }
+
+  const correctHeaderResponse = await fetch(`${baseUrl}${webhookPath("/webhooks/voice")}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-vapi-secret": vapiServerSecret },
+    body: JSON.stringify({
+      message: {
+        type: "assistant-request",
+        call: { id: "call_correct_sig", assistantId: "asst_client_a", phoneNumber: { number: "+15550001001" } },
+      },
+    }),
+  });
+  if (correctHeaderResponse.status !== 200) {
+    throw new Error(`expected correct Vapi signature to be accepted, got ${correctHeaderResponse.status}`);
+  }
+  const correctHeaderPayload = await correctHeaderResponse.json();
+  if (correctHeaderPayload.assistantId !== "asst_client_a") {
+    throw new Error("expected correctly-signed request to route normally");
+  }
+
+  const authRejectedEvents = await fetch(`${baseUrl}/api/events?token=smoke-admin-token`).then((res) => res.json());
+  const rejectedCount = authRejectedEvents.events.filter((event) => event.type === "auth_rejected").length;
+  if (rejectedCount < 2) {
+    throw new Error(`expected at least 2 auth_rejected events to be logged, got ${rejectedCount}`);
+  }
+
+  // --- Idempotent call processing: identical end-of-call-report sent twice ---
+  const duplicatePayload = {
+    message: {
+      type: "end-of-call-report",
+      call: { id: duplicateCallId, assistantId: "asst_client_a", phoneNumber: { number: "+15550001001" } },
+      summary: "Name: Dana Duplicate. Phone: 555-010-2020. Service: leak repair. Time: Monday 10 AM.",
+      artifact: { transcript: "Caller requested leak repair for Monday 10 AM." },
+    },
+  };
+  await post(webhookPath("/webhooks/voice"), duplicatePayload);
+  await post(webhookPath("/webhooks/voice"), duplicatePayload);
+  const duplicateLeadsPayload = await fetch(`${baseUrl}/api/leads?token=${clientAToken}`).then((res) => res.json());
+  const duplicateLeads = duplicateLeadsPayload.leads.filter((lead) => lead.callId === duplicateCallId);
+  if (duplicateLeads.length !== 1) {
+    throw new Error(`expected exactly one lead for a call_id sent twice, got ${duplicateLeads.length}`);
+  }
+
+  // --- Suspended tenant kill switch: no assistant, no lead, no spend ---
+  const suspendedAssistantRequest = await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "assistant-request",
+      call: { id: "call_suspended_assistant_request", assistantId: "asst_client_c", phoneNumber: { number: "+15550001003" } },
+    },
+  });
+  if (suspendedAssistantRequest.assistantId) {
+    throw new Error("expected suspended tenant to not receive an assistant");
+  }
+
+  await post(webhookPath("/webhooks/voice"), {
+    message: {
+      type: "end-of-call-report",
+      call: { id: suspendedCallId, assistantId: "asst_client_c", phoneNumber: { number: "+15550001003" } },
+      summary: "Name: Ignore Me. Phone: 555-010-3030. Service: panel repair. Time: Tuesday 9 AM.",
+      artifact: { transcript: "Caller requested panel repair." },
+    },
+  });
+  const suspendedEventsPayload = await fetch(`${baseUrl}/api/events?token=smoke-admin-token`).then((res) => res.json());
+  const blockedEvents = suspendedEventsPayload.events.filter((event) => event.type === "tenant_blocked_call"
+    && event.businessId === "client-c-suspended");
+  if (blockedEvents.length < 2) {
+    throw new Error(`expected suspended tenant calls to be logged as blocked, got ${blockedEvents.length}`);
+  }
+  const suspendedLeadsPayload = await fetch(`${baseUrl}/api/leads?token=smoke-admin-token`).then((res) => res.json());
+  const suspendedLeaks = suspendedLeadsPayload.leads.filter((lead) => lead.businessId === "client-c-suspended");
+  if (suspendedLeaks.length !== 0) {
+    throw new Error("expected suspended tenant to create zero leads");
   }
 
   console.log("Smoke test passed");
