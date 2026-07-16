@@ -1,11 +1,12 @@
 import http from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import * as chrono from "chrono-node";
 import { DateTime } from "luxon";
 import pg from "pg";
+import twilio from "twilio";
 
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || new URL("../data/", import.meta.url);
@@ -487,6 +488,9 @@ function configuredClientProfiles() {
       assistantId: client.assistantId || client.vapiAssistantId || "",
       phoneNumber: client.phoneNumber || client.vapiPhoneNumber || client.twilioPhoneNumber || "",
       leadViewerToken: client.leadViewerToken || "",
+      status: normalizeTenantStatus(client.status) || "active",
+      stripeCustomerId: client.stripeCustomerId || "",
+      stripeSubscriptionId: client.stripeSubscriptionId || "",
     }))
     .filter((client) => client.businessId);
 }
@@ -506,7 +510,19 @@ function storedClientData(profile, input = {}) {
     ownerWhatsApp: profile.ownerWhatsApp || "",
     assistantId: input.assistantId || input.vapiAssistantId || "",
     phoneNumber: input.phoneNumber || input.vapiPhoneNumber || input.twilioPhoneNumber || "",
+    // Tenant lifecycle status. Enforced at call time so a suspended tenant
+    // costs nothing and receives no calls/messages. See docs/tenant-status.md.
+    status: normalizeTenantStatus(input.status) || normalizeTenantStatus(profile.status) || "active",
+    stripeCustomerId: input.stripeCustomerId || profile.stripeCustomerId || "",
+    stripeSubscriptionId: input.stripeSubscriptionId || profile.stripeSubscriptionId || "",
   };
+}
+
+const TENANT_STATUSES = ["onboarding", "active", "past_due", "suspended", "offboarded"];
+
+function normalizeTenantStatus(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return TENANT_STATUSES.includes(normalized) ? normalized : "";
 }
 
 async function listStoredClients() {
@@ -536,6 +552,9 @@ function clientProfileFromStoredRow(row) {
     ownerWhatsApp: data.ownerWhatsApp || "",
     assistantId: data.assistantId || "",
     phoneNumber: data.phoneNumber || "",
+    status: normalizeTenantStatus(data.status) || "active",
+    stripeCustomerId: data.stripeCustomerId || "",
+    stripeSubscriptionId: data.stripeSubscriptionId || "",
   };
 }
 
@@ -1373,6 +1392,56 @@ function isWebhookAuthorized(req, url) {
   return requestSecret === configuredSecret
     || headerSecret === configuredSecret
     || auth === `Bearer ${configuredSecret}`;
+}
+
+function timingSafeEqualStrings(a, b) {
+  const bufA = Buffer.from(String(a ?? ""), "utf8");
+  const bufB = Buffer.from(String(b ?? ""), "utf8");
+  if (bufA.length === 0 || bufB.length === 0) return false;
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+function vapiServerSecret() {
+  return process.env.VAPI_SERVER_SECRET || "";
+}
+
+// Dedicated Vapi webhook check. Vapi echoes back the server secret you
+// configure in the assistant's Server URL settings. We accept either header
+// name because Vapi has used both x-vapi-secret and x-vapi-signature across
+// docs/versions; whichever your dashboard sends, this will match it.
+// Returns { ok, mode }. mode "legacy" means VAPI_SERVER_SECRET is not set
+// yet, so the caller should fall back to the older shared-secret check
+// instead of accepting unconditionally.
+function isVapiWebhookAuthorized(req) {
+  const configured = vapiServerSecret();
+  if (!configured) {
+    return { ok: true, mode: "legacy" };
+  }
+  const provided = req.headers["x-vapi-secret"] || req.headers["x-vapi-signature"] || "";
+  return { ok: timingSafeEqualStrings(provided, configured), mode: "vapi_secret" };
+}
+
+// Real Twilio request-signature validation (X-Twilio-Signature), per
+// https://www.twilio.com/docs/usage/security#validating-requests.
+// Falls back to the legacy shared-secret check when TWILIO_AUTH_TOKEN is not
+// set, so local/dev setups without Twilio creds keep working.
+function isTwilioWebhookAuthorized(req, fullUrl, params) {
+  const authToken = process.env.TWILIO_AUTH_TOKEN || "";
+  if (!authToken) {
+    return { ok: true, mode: "legacy" };
+  }
+  const signature = req.headers["x-twilio-signature"];
+  if (!signature) {
+    return { ok: false, mode: "twilio_signature" };
+  }
+  try {
+    const ok = twilio.validateRequest(authToken, signature, fullUrl, params || {});
+    return { ok, mode: "twilio_signature" };
+  } catch (error) {
+    console.error("twilio signature validation error", error);
+    return { ok: false, mode: "twilio_signature" };
+  }
 }
 
 function requestIp(req) {
@@ -4285,6 +4354,28 @@ async function handleVapiWebhook(body) {
   const activeProfile = tenantProfile || businessProfile();
   await saveEvent({ provider: "vapi", type, businessId: activeProfile.businessId, raw: body });
 
+  // Kill switch: a tenant that is suspended, offboarded, or in a lapsed
+  // past_due state gets no assistant, no lead created, and no owner
+  // notification. This is what makes turning a non-paying tenant off (or
+  // pausing a compromised one) instant and total, with zero further spend.
+  const blockedStatuses = new Set(["suspended", "offboarded"]);
+  if (tenantProfile && blockedStatuses.has(tenantProfile.status)) {
+    await saveEvent({
+      provider: "vapi",
+      type: "tenant_blocked_call",
+      businessId: activeProfile.businessId,
+      callId,
+      raw: { type, status: tenantProfile.status },
+    });
+    if (type === "assistant-request") {
+      // Full polite-hangup assistant copy lands in Phase 2 (dynamic
+      // assistant). For now we fail closed: no assistant is returned, so
+      // Vapi will not connect the call to a live agent.
+      return { error: "This service is not currently available." };
+    }
+    return { ok: true, type, skipped: true, reason: "tenant_" + tenantProfile.status };
+  }
+
   if (type === "assistant-request") {
     if (tenantProfile?.assistantId) {
       return { assistantId: tenantProfile.assistantId };
@@ -4300,44 +4391,48 @@ async function handleVapiWebhook(body) {
   }
 
   if (type === "end-of-call-report") {
-    const existingLead = await findLeadByCallId(callId);
-    if (existingLead) {
-      return {
-        ok: true,
-        type,
-        skipped: true,
-        reason: "lead_already_saved_for_call",
-        leadId: existingLead.id,
-      };
-    }
+    return withCallProcessingLock(activeProfile.businessId, callId || randomUUID(), async () => {
+      const existingLead = await findLeadByCallId(callId);
+      if (existingLead) {
+        return {
+          ok: true,
+          type,
+          skipped: true,
+          reason: "lead_already_saved_for_call",
+          leadId: existingLead.id,
+        };
+      }
 
-    const transcript = message.artifact?.transcript || "";
-    const summary = message.summary || message.analysis?.summary || transcript.slice(0, 500);
-    const recentToolLead = await findRecentToolLeadForBusiness(activeProfile.businessId);
-    if (!callId && recentToolLead && endOfCallLooksHandledByTool(summary, transcript)) {
-      return {
-        ok: true,
-        type,
-        skipped: true,
-        reason: "recent_tool_lead_already_saved",
-        leadId: recentToolLead.id,
-      };
-    }
-    if (summary) {
-      const extractedLead = extractLeadFromTranscript(transcript, summary);
-      const lead = await saveLead(normalizeLead({
-        ...extractedLead,
-        businessId: activeProfile.businessId,
-        tenantProfile: activeProfile,
-        source: "vapi_end_of_call",
-        status: "needs_review",
-        summary,
-        transcript,
-        callId,
-      }));
-      const { notification } = await attemptOwnerNotification(lead);
-      return { ok: true, type, leadId: lead.id, notification };
-    }
+      const transcript = message.artifact?.transcript || "";
+      const summary = message.summary || message.analysis?.summary || transcript.slice(0, 500);
+      const recentToolLead = await findRecentToolLeadForBusiness(activeProfile.businessId);
+      if (!callId && recentToolLead && endOfCallLooksHandledByTool(summary, transcript)) {
+        return {
+          ok: true,
+          type,
+          skipped: true,
+          reason: "recent_tool_lead_already_saved",
+          leadId: recentToolLead.id,
+        };
+      }
+      if (summary) {
+        const extractedLead = extractLeadFromTranscript(transcript, summary);
+        const lead = await saveLead(normalizeLead({
+          ...extractedLead,
+          businessId: activeProfile.businessId,
+          tenantProfile: activeProfile,
+          source: "vapi_end_of_call",
+          status: "needs_review",
+          summary,
+          transcript,
+          callId,
+        }));
+        const { notification } = await attemptOwnerNotification(lead);
+        return { ok: true, type, leadId: lead.id, notification };
+      }
+
+      return { ok: true, type };
+    });
   }
 
   return { ok: true, type };
@@ -4849,7 +4944,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     if ((req.method === "GET" || req.method === "POST") && url.pathname === "/webhooks/twilio/voice-fallback") {
-      if (!isWebhookAuthorized(req, url)) {
+      const fallbackParams = req.method === "POST"
+        ? await readFormOrJson(req)
+        : Object.fromEntries(url.searchParams);
+      const fallbackAuth = isTwilioWebhookAuthorized(req, requestBaseUrl(req, url) + url.pathname + url.search, fallbackParams);
+      if (!fallbackAuth.ok) {
+        await saveEvent({ provider: "twilio", type: "auth_rejected", businessId: "unrouted", raw: { path: url.pathname, ip: requestIp(req) } });
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+      if (fallbackAuth.mode === "legacy" && !isWebhookAuthorized(req, url)) {
         return json(res, 401, { ok: false, error: "unauthorized_webhook" });
       }
 
@@ -4857,11 +4960,17 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/twilio/recording") {
-      if (!isWebhookAuthorized(req, url)) {
+      const recordingParams = await readFormOrJson(req);
+      const recordingAuth = isTwilioWebhookAuthorized(req, requestBaseUrl(req, url) + url.pathname + url.search, recordingParams);
+      if (!recordingAuth.ok) {
+        await saveEvent({ provider: "twilio", type: "auth_rejected", businessId: "unrouted", raw: { path: url.pathname, ip: requestIp(req) } });
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+      if (recordingAuth.mode === "legacy" && !isWebhookAuthorized(req, url)) {
         return json(res, 401, { ok: false, error: "unauthorized_webhook" });
       }
 
-      await handleTwilioRecording(await readFormOrJson(req));
+      await handleTwilioRecording(recordingParams);
       return twiml(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="alice">Thanks. We received your message. Goodbye.</Say>
@@ -4870,7 +4979,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && url.pathname === "/webhooks/voice") {
-      if (!isWebhookAuthorized(req, url)) {
+      const vapiAuth = isVapiWebhookAuthorized(req);
+      if (!vapiAuth.ok) {
+        await saveEvent({ provider: "vapi", type: "auth_rejected", businessId: "unrouted", raw: { path: url.pathname, ip: requestIp(req) } });
+        return json(res, 401, { ok: false, error: "unauthorized_webhook" });
+      }
+      if (vapiAuth.mode === "legacy" && !isWebhookAuthorized(req, url)) {
         return json(res, 401, { ok: false, error: "unauthorized_webhook" });
       }
 

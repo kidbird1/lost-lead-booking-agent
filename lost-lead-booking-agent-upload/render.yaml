@@ -48,6 +48,8 @@ services:
         generateValue: true
       - key: ADMIN_TOKEN
         generateValue: true
+      - key: VAPI_SERVER_SECRET
+        generateValue: true
       - key: CLIENTS_JSON
         value: ""
       - key: RATE_LIMIT_ADMIN_PER_MINUTE
