@@ -1,0 +1,23 @@
+name = "missed-call-agent"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+
+# Every 10 minutes: retry failed owner alerts.
+# Every day at 13:00 UTC (9 am New York): send you the daily summary.
+[triggers]
+crons = ["*/10 * * * *", "0 13 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "missed-call-agent"
+database_id = "REPLACE_AFTER_wrangler_d1_create"
+
+# Non-secret settings. Secrets go in with `npx wrangler secret put NAME` (see RUN-GUIDE.md).
+[vars]
+SEND_LIVE = "false"              # "true" = really send WhatsApp/SMS. "false" = log only.
+TWILIO_WHATSAPP_FROM = ""        # whatsapp:+14155238886 (sandbox) or your approved sender
+TWILIO_SMS_FROM = ""             # +1... Twilio number for the SMS backup
+WHATSAPP_TEMPLATE_SID = ""       # HX... approved lead-alert template (needed for real clients)
+OPERATOR_WHATSAPP = ""           # YOUR WhatsApp: daily summary + failure alerts
+VAPI_MODEL = "gpt-4o-mini"
+VAPI_VOICE = ""                  # optional Vapi voice id; empty = Vapi default

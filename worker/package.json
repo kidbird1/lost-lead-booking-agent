@@ -1,0 +1,16 @@
+{
+  "name": "missed-call-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "db:local": "wrangler d1 execute missed-call-agent --local --file schema.sql",
+    "db:remote": "wrangler d1 execute missed-call-agent --remote --file schema.sql",
+    "deploy": "wrangler deploy",
+    "client": "node scripts/client.mjs",
+    "fake-call": "node scripts/fake-call.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
