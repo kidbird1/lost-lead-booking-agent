@@ -62,8 +62,6 @@ async function handleVapi(req, env, ctx) {
 
   const callId = call.id || crypto.randomUUID();
   const area = await env.DB.prepare("SELECT * FROM area_checks WHERE call_id = ? ORDER BY id DESC LIMIT 1").bind(callId).first();
-  const profile = JSON.parse(client.profile || "{}");
-  const skip = area?.status === "outside" && !profile.notifyOutOfArea;
 
   const row = await env.DB.prepare(`
     INSERT INTO leads (client_id, call_id, caller_number, name, callback, service, address, urgency, best_time, details,
@@ -77,12 +75,12 @@ async function handleVapi(req, env, ctx) {
     area?.status || null, area?.place || null,
     summary || (transcript ? "" : "Caller hung up before giving details. Call them back."),
     transcript.slice(0, 20000), Math.round(Number(msg.durationSeconds) || 0) || null, msg.endedReason || null,
-    skip ? "skipped" : "pending",
+    "pending",
   ).first();
 
   if (!row) return json({ ok: true, duplicate: true });
-  if (!skip) ctx.waitUntil(alertOwner(env, row.id));
-  return json({ ok: true, leadId: row.id, skipped: skip ? "out of area" : undefined });
+  ctx.waitUntil(alertOwner(env, row.id));
+  return json({ ok: true, leadId: row.id });
 }
 
 // The agent asks us things mid-call (right now: "is this caller in our area?").

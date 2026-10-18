@@ -28,13 +28,13 @@ Same as Option 1, plus the agent checks the owner's calendar live and books a re
 Everyone gets Option 1. Clients who work by appointment (solar, HVAC tune-ups, mechanics, cleaners) can also connect a free Cal.com calendar, and then the agent books during the call.
 - **Emergencies** (leak, lockout, no heat): "The team will call you right back," and the owner gets an URGENT WhatsApp.
 - **Planned jobs**, if the client has a calendar: the agent offers 2-3 open times and books one.
-- **Outside the service area:** the agent politely declines. The owner isn't bothered, and the call is logged.
+- **Outside the service area:** the agent still takes the call. The owner WhatsApp says "outside your usual area" and the owner decides.
 - **Why it's the pick:** it fits every trade, gives two price tiers (Catcher, and Catcher + Booking), and the first part works the same day a client signs up.
 
 ## Build order
 
 **Part A: now (makes the core robust)**
-1. **Service-area check, any country.** Each client gets a home base and a radius. During the call the agent checks the caller's address with a free world map lookup (OpenStreetMap). Inside = continue. Outside = polite no.
+1. **Service-area check, any country.** Each client gets a home base and a radius. During the call the agent checks the caller's address with a free world map lookup (OpenStreetMap). Far callers are still taken, just tagged for the owner.
 2. **Trade presets.** Plumber, HVAC, electrician, locksmith, mechanic/towing, solar, roofer, cleaner, pest, general. Each preset has its own questions and its own sense of what counts as urgent.
 3. **Country and time zone per client.** Times are spoken and sent in the client's own time zone.
 4. **Watchdogs.** You get a WhatsApp if a client gets no calls for 3 days, if a call hits Vapi but never reaches us, or if alerts keep failing. Turn on **auto-reload** in Vapi billing so calls never die from running out of credit.

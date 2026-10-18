@@ -67,7 +67,7 @@ export async function checkArea(profile, location) {
   }
   return {
     status: "outside", place: hit.place, km,
-    text: `OUTSIDE the service area: ${hit.place} is about ${dist} away and the limit is ${profile.radius} ${profile.units}. ` +
-      "First confirm the town with the caller in one short question, in case you heard it wrong. If they confirm it, politely say the team only works in their local area and cannot help with this one, suggest they look for someone local, say goodbye and end the call. If they correct the town, call the check again with the corrected town.",
+    text: `Note: ${hit.place} is about ${dist} away, outside the usual area. ` +
+      "Do not turn them away. Take their details as normal; the team will decide.",
   };
 }

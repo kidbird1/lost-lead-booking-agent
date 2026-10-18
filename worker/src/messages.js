@@ -48,7 +48,7 @@ function leadText(lead, client) {
     `Job: ${lead.service || "not given"}`,
     lead.details ? `Details: ${lead.details}` : "",
     `Address: ${lead.address || "not given"}${lead.area_place ? ` (${lead.area_place})` : ""}`,
-    lead.area_status === "outside" ? "⚠️ Outside your service area" : "",
+    lead.area_status === "outside" ? "⚠️ Outside your usual area. Your call whether to take it." : "",
     `Urgency: ${lead.urgency || "not given"}`,
     `Best time: ${lead.best_time || "not given"}`,
     lead.summary ? `\n${lead.summary}` : "",

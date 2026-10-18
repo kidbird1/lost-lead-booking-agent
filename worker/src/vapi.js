@@ -37,7 +37,7 @@ export function buildPrompt(client, profile) {
     "Steps:",
     "1. Ask their name.",
     `2. Ask: ${where}`,
-    `3. As soon as you have it, say "One moment" and call ${AREA_TOOL} with what they said. Follow what it tells you. If it says OUTSIDE, apologise, say goodbye and end the call.`,
+    `3. As soon as you have it, say "One moment" and call ${AREA_TOOL} with what they said. Never turn anyone away; the team decides.`,
     "4. Find out what they need. Ask only what applies:",
     ...trade.ask.map((q) => `   - ${q}`),
     "5. Ask if the number they are calling from is the best one to reach them. If not, take the better number and repeat it back.",
@@ -129,7 +129,6 @@ export async function upsertClient(env, input, origin) {
     timezone: pick("timezone", "timezone") || "America/New_York",
     homeBase: pick("home_base", "homeBase"),
     radius: Number(input.radius || old.radius || 30),
-    notifyOutOfArea: input.notify_out_of_area != null ? Boolean(input.notify_out_of_area) : Boolean(old.notifyOutOfArea),
     base: old.base || null,
   };
   profile.units = String(input.units || old.units || (["US", "GB", "LR", "MM"].includes(profile.country) ? "mi" : "km"));

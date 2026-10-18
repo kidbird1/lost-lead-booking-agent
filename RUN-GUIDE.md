@@ -71,9 +71,8 @@ To change their agent (new services, new hours), edit the file and run `add` aga
 | `radius` | `30` | How far they travel (miles in US/UK, km elsewhere) |
 | `country` | `US`, `NZ`, `AU` | Two-letter country code |
 | `timezone` | `America/New_York` | So the agent knows their local day and time |
-| `notify_out_of_area` | `false` | `true` = still WhatsApp the owner about out-of-area callers |
 
-Out-of-area callers are told politely the team can't help. They show on the admin page as "skipped".
+Far-away callers are never turned away. The owner WhatsApp just says "Outside your usual area" so they can decide.
 
 ## Running it day to day
 

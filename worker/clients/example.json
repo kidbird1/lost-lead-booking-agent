@@ -13,6 +13,5 @@
   "home_base": "Boca Raton, FL 33487",
   "radius": 30,
   "country": "US",
-  "timezone": "America/New_York",
-  "notify_out_of_area": false
+  "timezone": "America/New_York"
 }
