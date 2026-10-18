@@ -55,6 +55,8 @@ Run these from the `worker` folder.
 
 1. Make `clients/their-business.json` (copy the example).
 2. Run `node scripts/client.mjs add clients/their-business.json`. It prints their agent number.
+   Then open the agent in the Vapi dashboard and press **Publish**. Vapi keeps changes as a Draft until you do.
+   Already own a spare number in Vapi? Run `node scripts/client.mjs numbers` and put its id in the file as `"vapi_phone_id"`. Vapi needs a card on file to buy more numbers.
 3. They turn on **"forward when busy / no answer"** on their business phone to that number. Every carrier does this differently: search "<carrier> conditional call forwarding". Test it together on the phone.
 4. Didn't pay? `node scripts/client.mjs pause their-business` and their number stops answering. `resume` turns it back on.
 

@@ -68,7 +68,7 @@ async function handleVapi(req, env, ctx) {
     ON CONFLICT(call_id) DO NOTHING RETURNING id`,
   ).bind(
     client.id, call.id || crypto.randomUUID(), caller,
-    str(data.name), str(data.callback) || caller, str(data.service), str(data.address), str(data.urgency), str(data.best_time),
+    str(data.name), hasPhone(data.callback) ? str(data.callback) : caller, str(data.service), str(data.address), str(data.urgency), str(data.best_time),
     summary || (transcript ? "" : "Caller hung up before giving details. Call them back."),
     transcript.slice(0, 20000), Math.round(Number(msg.durationSeconds) || 0) || null, msg.endedReason || null,
   ).first();
@@ -169,6 +169,7 @@ function safeEqual(a, b) {
   return crypto.subtle.timingSafeEqual(x, y);
 }
 
+const hasPhone = (v) => /\d{7,}/.test(String(v || "").replace(/\D/g, ""));
 const str = (v) => (v == null ? "" : String(v).trim().slice(0, 500));
 const json = (body, status = 200) => new Response(JSON.stringify(body, null, 2), { status, headers: { "content-type": "application/json" } });
 const html = (body) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
