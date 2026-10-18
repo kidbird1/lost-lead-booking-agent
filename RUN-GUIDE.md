@@ -51,7 +51,17 @@ Run these from the `worker` folder.
 4. Set `SEND_LIVE = "true"` in `wrangler.toml` and run `npm run deploy`.
 5. Call the agent's number and pretend to be a customer. Hang up. The WhatsApp should arrive within about a minute.
 
-## Adding a paying client
+## Onboarding a business (the easy way)
+
+Send them this link: **https://missed-call-agent.wwape4.workers.dev/join**
+
+1. They fill it in using their own brand name, like "Stanley Steamer of Northern Virginia". Each location signs up separately, so each gets its own name, area and phone number.
+2. You get a WhatsApp: "New sign-up". They show as **pending** on the admin page (no Vapi cost yet).
+3. You press **Approve** on the admin page, or run `node scripts/client.mjs approve <id>`. That makes their agent and number. If you have a spare Vapi number, paste its id in the box.
+4. In Vapi, press **Publish** on their agent.
+5. Send them their number and help them turn on "forward when busy / no answer".
+
+## Adding a paying client (by file)
 
 1. Make `clients/their-business.json` (copy the example).
 2. Run `node scripts/client.mjs add clients/their-business.json`. It prints their agent number.

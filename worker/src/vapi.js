@@ -13,6 +13,8 @@ const LEAD_SCHEMA = {
     urgency: { type: "string", description: "emergency, soon, or flexible" },
     best_time: { type: "string", description: "When they want a call back or visit, in their words" },
     details: { type: "string", description: "Answers to the trade questions (car model, pest type, bill size, etc.) in one short line" },
+    property_type: { type: "string", description: "home, business, or industrial" },
+    company: { type: "string", description: "Business or property name if it is not a home (hotel, restaurant, office, warehouse, etc.)" },
   },
 };
 
@@ -38,12 +40,13 @@ export function buildPrompt(client, profile) {
     "1. Ask their name.",
     `2. Ask: ${where}`,
     `3. As soon as you have it, say "One moment" and call ${AREA_TOOL} with what they said. Never turn anyone away; the team decides.`,
-    "4. Find out what they need. Ask only what applies:",
+    "4. Ask if it is a home or a business. If it is a business or industrial site (hotel, restaurant, office, store, warehouse, factory, rental property), get the business name and their role (owner, manager, maintenance), and if someone will be on site to let the team in.",
+    "5. Find out what they need. Ask only what applies:",
     ...trade.ask.map((q) => `   - ${q}`),
-    "5. Ask if the number they are calling from is the best one to reach them. If not, take the better number and repeat it back.",
-    "6. Ask how soon they need help, and the best time for the team to call back or come out.",
-    "7. Read back a one-line summary. Then say: \"Got it. The team will call you back shortly to confirm.\"",
-    `8. Say "Thanks for calling ${client.business_name}. Have a great day." and end the call.`,
+    "6. Ask if the number they are calling from is the best one to reach them. If not, take the better number and repeat it back.",
+    "7. Ask how soon they need help, and the best time for the team to call back or come out.",
+    "8. Read back a one-line summary. Then say: \"Got it. The team will call you back shortly to confirm.\"",
+    `9. Say "Thanks for calling ${client.business_name}. Have a great day." Then end the call right away. Do not wait for a reply.`,
     "",
     `EMERGENCY means: ${trade.urgentIf}. In an emergency, keep it fast: name, location, number, what is happening. Tell them the team will call them right back.`,
     "",
@@ -83,7 +86,8 @@ export function buildAssistant(env, client, profile, origin) {
     },
     endCallFunctionEnabled: true,
     maxDurationSeconds: 600,
-    silenceTimeoutSeconds: 30,
+    silenceTimeoutSeconds: 15,
+    endCallPhrases: ["have a great day"], // hang up as soon as the goodbye is said
     serverMessages: ["end-of-call-report", "tool-calls"],
     server,
     analysisPlan: {
@@ -115,7 +119,6 @@ export async function upsertClient(env, input, origin) {
   const id = String(input.id || "").trim().toLowerCase();
   if (!/^[a-z0-9-]{2,40}$/.test(id)) throw new Error("id must be 2-40 letters, numbers or dashes, like acme-roofing");
   if (!input.business_name) throw new Error("business_name is required");
-  if (!input.owner_whatsapp && !input.owner_sms) throw new Error("owner_whatsapp or owner_sms is required");
 
   // Blank fields keep their old value, so an update only needs what changed.
   const existing = await env.DB.prepare("SELECT * FROM clients WHERE id = ?").bind(id).first();
@@ -145,6 +148,7 @@ export async function upsertClient(env, input, origin) {
     vapi_phone_id: input.vapi_phone_id || existing?.vapi_phone_id || null,
     phone_number: input.phone_number || existing?.phone_number || null,
   };
+  if (!client.owner_whatsapp && !client.owner_sms) throw new Error("owner_whatsapp or owner_sms is required");
 
   await env.DB.prepare(`
     INSERT INTO clients (id, business_name, owner_whatsapp, owner_sms, profile, vapi_assistant_id, vapi_phone_id, phone_number, status)

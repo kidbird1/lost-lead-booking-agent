@@ -45,6 +45,7 @@ function leadText(lead, client) {
     isUrgent(lead) ? `🚨 URGENT: call back now. Missed call for ${client.business_name}` : `📞 Missed call caught for ${client.business_name}`,
     `Name: ${lead.name || "not given"}`,
     `Call back: ${lead.callback || lead.caller_number || "not given"}`,
+    /business|commercial|industrial/i.test(lead.property_type || "") ? `🏢 Commercial: ${lead.company || lead.property_type}` : "",
     `Job: ${lead.service || "not given"}`,
     lead.details ? `Details: ${lead.details}` : "",
     `Address: ${lead.address || "not given"}${lead.area_place ? ` (${lead.area_place})` : ""}`,

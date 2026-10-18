@@ -42,7 +42,7 @@ export async function connectionChecks(env) {
 }
 
 const badge = (status) => {
-  const tone = { sent: "ok", active: "ok", inside: "ok", test: "info", pending: "info", setup: "info", unknown: "info", skipped: "warn", outside: "warn", failed: "bad", gave_up: "bad", paused: "warn" }[status] || "info";
+  const tone = { sent: "ok", active: "ok", inside: "ok", test: "info", pending: "warn", setup: "info", unknown: "info", skipped: "warn", outside: "warn", failed: "bad", gave_up: "bad", paused: "warn" }[status] || "info";
   return `<span class="badge ${tone}">${esc(status)}</span>`;
 };
 
@@ -65,8 +65,9 @@ export async function adminPage(env, url) {
     <td>${esc(c.phone_number || "—")}</td>
     <td>${esc(c.owner_whatsapp || "")}${c.owner_sms ? `<br><small>SMS ${esc(c.owner_sms)}</small>` : ""}</td>
     <td>${c.leads_7d}</td>
-    <td><form method="post" action="/admin/clients/${esc(c.id)}/${c.status === "paused" ? "resume" : "pause"}">
-      <button>${c.status === "paused" ? "Resume" : "Pause"}</button></form></td>
+    <td>${c.status === "pending"
+      ? `<form method="post" action="/admin/clients/${esc(c.id)}/approve"><input name="vapi_phone_id" placeholder="spare Vapi number id (optional)"><button>Approve</button></form>`
+      : `<form method="post" action="/admin/clients/${esc(c.id)}/${c.status === "paused" ? "resume" : "pause"}"><button>${c.status === "paused" ? "Resume" : "Pause"}</button></form>`}</td>
   </tr>`).join("") || `<tr><td colspan="6" class="empty">No clients yet. Add one below.</td></tr>`;
 
   const leadRows = leads.map((l) => `<tr>

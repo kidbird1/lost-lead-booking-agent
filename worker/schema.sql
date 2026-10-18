@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS clients (
   vapi_assistant_id TEXT,
   vapi_phone_id TEXT,
   phone_number TEXT,                   -- the number the business forwards missed calls to
-  status TEXT NOT NULL DEFAULT 'active', -- active | paused | setup
+  status TEXT NOT NULL DEFAULT 'active', -- active | paused | setup | pending (signed up, waiting for you)
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -25,6 +25,8 @@ CREATE TABLE IF NOT EXISTS leads (
   urgency TEXT,
   best_time TEXT,
   details TEXT,
+  property_type TEXT,                  -- home | business | industrial
+  company TEXT,
   area_status TEXT,                    -- inside | outside | unknown | NULL
   area_place TEXT,
   summary TEXT,

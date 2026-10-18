@@ -3,6 +3,7 @@
 import { alertOwner, alertOperator, retryFailedAlerts, sendDailySummary, watchVapiCalls } from "./messages.js";
 import { upsertClient, setClientStatus, vapi, AREA_TOOL } from "./vapi.js";
 import { checkArea } from "./geo.js";
+import { joinPage, thanksPage, saveSignup } from "./join.js";
 import { adminPage, connectionChecks } from "./admin.js";
 
 const DAILY_CRON = "0 13 * * *";
@@ -14,6 +15,7 @@ export default {
       if (url.pathname === "/health") return json({ ok: true });
       if (url.pathname === "/vapi" && req.method === "POST") return await handleVapi(req, env, ctx);
       if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) return await handleAdmin(req, env, url);
+      if (url.pathname === "/join") return await handleJoin(req, env, ctx, url);
       return new Response("Not found", { status: 404 });
     } catch (err) {
       console.error(err);
@@ -64,14 +66,14 @@ async function handleVapi(req, env, ctx) {
   const area = await env.DB.prepare("SELECT * FROM area_checks WHERE call_id = ? ORDER BY id DESC LIMIT 1").bind(callId).first();
 
   const row = await env.DB.prepare(`
-    INSERT INTO leads (client_id, call_id, caller_number, name, callback, service, address, urgency, best_time, details,
+    INSERT INTO leads (client_id, call_id, caller_number, name, callback, service, address, urgency, best_time, details, property_type, company,
       area_status, area_place, summary, transcript, duration_s, ended_reason, alert_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(call_id) DO NOTHING RETURNING id`,
   ).bind(
     client.id, callId, caller,
     str(data.name), hasPhone(data.callback) ? str(data.callback) : caller, str(data.service), str(data.address),
-    str(data.urgency), str(data.best_time), str(data.details),
+    str(data.urgency), str(data.best_time), str(data.details), str(data.property_type), str(data.company),
     area?.status || null, area?.place || null,
     summary || (transcript ? "" : "Caller hung up before giving details. Call them back."),
     transcript.slice(0, 20000), Math.round(Number(msg.durationSeconds) || 0) || null, msg.endedReason || null,
@@ -117,6 +119,20 @@ async function findClient(env, msg) {
   return env.DB.prepare(
     "SELECT * FROM clients WHERE (vapi_assistant_id = ? AND ? <> '') OR (vapi_phone_id = ? AND ? <> '') LIMIT 1",
   ).bind(assistantId, assistantId, phoneId, phoneId).first();
+}
+
+// ---------- Public sign-up ----------
+
+async function handleJoin(req, env, ctx, url) {
+  if (req.method !== "POST") return html(joinPage());
+  const f = Object.fromEntries(await req.formData());
+  const r = await saveSignup(env, f);
+  if (!r.ok) return html(joinPage(r.error, f), 400);
+  if (r.id !== "ignored") {
+    await logEvent(env, "signup", `${r.name} (${r.id}) in ${r.place}`);
+    ctx.waitUntil(alertOperator(env, `🆕 New sign-up: ${r.name}, ${r.place}.\nApprove it on ${url.origin}/admin or run:\nnode scripts/client.mjs approve ${r.id}`));
+  }
+  return html(thanksPage(String(f.contact_name || "").split(" ")[0] || "there"));
 }
 
 // ---------- Admin (your control room) ----------
@@ -180,7 +196,16 @@ async function handleAdmin(req, env, url) {
     }
     if (req.method === "POST" && p === "/admin/clients") return done(await upsertClient(env, await input(), url.origin));
 
-    let m = p.match(/^\/admin\/clients\/([a-z0-9-]+)\/(pause|resume)$/);
+    let m = p.match(/^\/admin\/clients\/([a-z0-9-]+)\/approve$/);
+    if (req.method === "POST" && m) {
+      // Turns a sign-up into a live line: makes the agent, and a number (or uses vapi_phone_id if given).
+      const extra = isForm ? Object.fromEntries(await req.formData()) : await req.json().catch(() => ({}));
+      const c = await env.DB.prepare("SELECT id, business_name FROM clients WHERE id = ?").bind(m[1]).first();
+      if (!c) throw new Error(`no client called ${m[1]}`);
+      return done(await upsertClient(env, { ...extra, id: c.id, business_name: c.business_name }, url.origin));
+    }
+
+    m = p.match(/^\/admin\/clients\/([a-z0-9-]+)\/(pause|resume)$/);
     if (req.method === "POST" && m) return done(await setClientStatus(env, m[1], m[2] === "pause" ? "paused" : "active"));
 
     m = p.match(/^\/admin\/leads\/(\d+)\/resend$/);
@@ -236,4 +261,4 @@ function safeEqual(a, b) {
 const hasPhone = (v) => /\d{7,}/.test(String(v || "").replace(/\D/g, ""));
 const str = (v) => (v == null ? "" : String(v).trim().slice(0, 500));
 const json = (body, status = 200) => new Response(JSON.stringify(body, null, 2), { status, headers: { "content-type": "application/json" } });
-const html = (body) => new Response(body, { headers: { "content-type": "text/html; charset=utf-8" } });
+const html = (body, status = 200) => new Response(body, { status, headers: { "content-type": "text/html; charset=utf-8" } });

@@ -3,6 +3,7 @@
 //   node scripts/client.mjs add clients/acme-roofing.json
 //   node scripts/client.mjs pause acme-roofing
 //   node scripts/client.mjs resume acme-roofing
+//   node scripts/client.mjs approve <id> [spare-vapi-number-id]   (turn a /join sign-up into a live line)
 //   node scripts/client.mjs status
 //   node scripts/client.mjs numbers      (phone numbers you already own in Vapi)
 //
@@ -38,6 +39,7 @@ async function call(method, path, body) {
 const [cmd, arg] = process.argv.slice(2);
 if (cmd === "add" && arg) await call("POST", "/admin/clients", JSON.parse(readFileSync(arg, "utf8")));
 else if ((cmd === "pause" || cmd === "resume") && arg) await call("POST", `/admin/clients/${arg}/${cmd}`);
+else if (cmd === "approve" && arg) await call("POST", `/admin/clients/${arg}/approve`, process.argv[4] ? { vapi_phone_id: process.argv[4] } : {});
 else if (cmd === "status") await call("GET", "/admin/status");
 else if (cmd === "numbers") await call("GET", "/admin/vapi-numbers");
-else console.log("Usage: add <file.json> | pause <id> | resume <id> | status | numbers");
+else console.log("Usage: add <file.json> | approve <id> [vapi-number-id] | pause <id> | resume <id> | status | numbers");
