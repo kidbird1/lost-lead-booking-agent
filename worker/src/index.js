@@ -98,9 +98,23 @@ async function handleAdmin(req, env, url) {
     if (req.method === "GET" && p === "/admin/status") return json(await statusJson(env));
     if (req.method === "GET" && p === "/admin/vapi-numbers") {
       const numbers = await vapi(env, "GET", "/phone-number");
-      return json(numbers.map((n) => ({ id: n.id, number: n.number, assistantId: n.assistantId, name: n.name })));
+      return json(numbers.map((n) => ({ id: n.id, number: n.number, assistantId: n.assistantId, name: n.name, provider: n.provider, status: n.status, createdAt: n.createdAt, updatedAt: n.updatedAt, serverUrl: n.server?.url })));
     }
-    if (req.method === "POST" && p === "/admin/clients")return done(await upsertClient(env, await input(), url.origin));
+    if (req.method === "GET" && p === "/admin/vapi-calls") {
+      // Last few calls as Vapi sees them, plus where each agent sends its reports.
+      const calls = await vapi(env, "GET", "/call?limit=5");
+      const out = [];
+      for (const c of calls) {
+        const a = c.assistantId ? await vapi(env, "GET", `/assistant/${c.assistantId}`).catch((e) => ({ error: e.message })) : {};
+        out.push({
+          id: c.id, startedAt: c.startedAt, endedReason: c.endedReason, status: c.status,
+          assistantId: c.assistantId, phoneNumberId: c.phoneNumberId,
+          agentName: a.name, agentServerUrl: a.server?.url, agentServerMessages: a.serverMessages,
+        });
+      }
+      return json(out);
+    }
+    if (req.method === "POST" && p === "/admin/clients") return done(await upsertClient(env, await input(), url.origin));
 
     let m = p.match(/^\/admin\/clients\/([a-z0-9-]+)\/(pause|resume)$/);
     if (req.method === "POST" && m) return done(await setClientStatus(env, m[1], m[2] === "pause" ? "paused" : "active"));
