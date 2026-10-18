@@ -14,10 +14,10 @@ database_id = "2a541dc4-198b-4f53-a00f-a4142ee3bede"
 
 # Non-secret settings. Secrets go in with `npx wrangler secret put NAME` (see RUN-GUIDE.md).
 [vars]
-SEND_LIVE = "false"              # "true" = really send WhatsApp/SMS. "false" = log only.
-TWILIO_WHATSAPP_FROM = ""        # whatsapp:+14155238886 (sandbox) or your approved sender
+# OPERATOR_WHATSAPP (your own WhatsApp) is a secret, so it stays off GitHub.
+SEND_LIVE = "true"               # "true" = really send WhatsApp/SMS. "false" = log only.
+TWILIO_WHATSAPP_FROM = "whatsapp:+14155238886"      # whatsapp:+14155238886 (sandbox) or your approved sender
 TWILIO_SMS_FROM = ""             # +1... Twilio number for the SMS backup
 WHATSAPP_TEMPLATE_SID = ""       # HX... approved lead-alert template (needed for real clients)
-OPERATOR_WHATSAPP = ""           # YOUR WhatsApp: daily summary + failure alerts
 VAPI_MODEL = "gpt-4o-mini"
 VAPI_VOICE = ""                  # optional Vapi voice id; empty = Vapi default

@@ -4,6 +4,7 @@
 //   node scripts/client.mjs pause acme-roofing
 //   node scripts/client.mjs resume acme-roofing
 //   node scripts/client.mjs status
+//   node scripts/client.mjs numbers      (phone numbers you already own in Vapi)
 //
 // Reads WORKER_URL and ADMIN_PASSWORD from worker/.ops.env (or the environment).
 
@@ -38,4 +39,5 @@ const [cmd, arg] = process.argv.slice(2);
 if (cmd === "add" && arg) await call("POST", "/admin/clients", JSON.parse(readFileSync(arg, "utf8")));
 else if ((cmd === "pause" || cmd === "resume") && arg) await call("POST", `/admin/clients/${arg}/${cmd}`);
 else if (cmd === "status") await call("GET", "/admin/status");
-else console.log("Usage: add <file.json> | pause <id> | resume <id> | status");
+else if (cmd === "numbers") await call("GET", "/admin/vapi-numbers");
+else console.log("Usage: add <file.json> | pause <id> | resume <id> | status | numbers");

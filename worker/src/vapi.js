@@ -119,6 +119,11 @@ export async function upsertClient(env, input, origin) {
     notes.push("No VAPI_API_KEY set, so no Vapi agent or number was made (local test mode).");
   } else {
     const assistant = buildAssistant(env, client, profile, origin);
+    if (!client.vapi_assistant_id) {
+      // A half-finished earlier run may already have made this client's agent. Reuse it.
+      const found = (await vapi(env, "GET", "/assistant?limit=100")).find((a) => a.metadata?.clientId === id);
+      if (found) client.vapi_assistant_id = found.id;
+    }
     if (client.vapi_assistant_id) {
       await vapi(env, "PATCH", `/assistant/${client.vapi_assistant_id}`, assistant);
       notes.push("Updated the Vapi agent.");
@@ -127,7 +132,12 @@ export async function upsertClient(env, input, origin) {
       notes.push("Created the Vapi agent.");
     }
 
-    if (!client.vapi_phone_id) {
+    if (client.vapi_phone_id && client.vapi_phone_id !== existing?.vapi_phone_id) {
+      // Reusing a number you already own in Vapi: point it at this agent.
+      const phone = await vapi(env, "PATCH", `/phone-number/${client.vapi_phone_id}`, { assistantId: client.vapi_assistant_id, server: null });
+      client.phone_number = phone.number || client.phone_number;
+      notes.push(`Pointed your existing number ${client.phone_number || ""} at this agent.`);
+    } else if (!client.vapi_phone_id) {
       const phoneReq = input.twilio_number
         ? { provider: "twilio", number: input.twilio_number, twilioAccountSid: env.TWILIO_ACCOUNT_SID, twilioAuthToken: env.TWILIO_AUTH_TOKEN }
         : { provider: "vapi", numberDesiredAreaCode: String(input.area_code || "") || undefined };

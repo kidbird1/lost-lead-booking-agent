@@ -1,7 +1,7 @@
 // Missed Call Agent: Vapi answers the missed call -> this Worker saves the lead -> owner gets a WhatsApp.
 
 import { alertOwner, alertOperator, retryFailedAlerts, sendDailySummary } from "./messages.js";
-import { upsertClient, setClientStatus } from "./vapi.js";
+import { upsertClient, setClientStatus, vapi } from "./vapi.js";
 import { adminPage, connectionChecks } from "./admin.js";
 
 const DAILY_CRON = "0 13 * * *";
@@ -96,7 +96,11 @@ async function handleAdmin(req, env, url) {
   try {
     if (req.method === "GET" && p === "/admin") return html(await adminPage(env, url));
     if (req.method === "GET" && p === "/admin/status") return json(await statusJson(env));
-    if (req.method === "POST" && p === "/admin/clients") return done(await upsertClient(env, await input(), url.origin));
+    if (req.method === "GET" && p === "/admin/vapi-numbers") {
+      const numbers = await vapi(env, "GET", "/phone-number");
+      return json(numbers.map((n) => ({ id: n.id, number: n.number, assistantId: n.assistantId, name: n.name })));
+    }
+    if (req.method === "POST" && p === "/admin/clients")return done(await upsertClient(env, await input(), url.origin));
 
     let m = p.match(/^\/admin\/clients\/([a-z0-9-]+)\/(pause|resume)$/);
     if (req.method === "POST" && m) return done(await setClientStatus(env, m[1], m[2] === "pause" ? "paused" : "active"));
