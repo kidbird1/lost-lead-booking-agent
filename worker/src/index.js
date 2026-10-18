@@ -1,7 +1,8 @@
 // Missed Call Agent: Vapi answers the missed call -> this Worker saves the lead -> owner gets a WhatsApp.
 
-import { alertOwner, alertOperator, retryFailedAlerts, sendDailySummary } from "./messages.js";
-import { upsertClient, setClientStatus, vapi } from "./vapi.js";
+import { alertOwner, alertOperator, retryFailedAlerts, sendDailySummary, watchVapiCalls } from "./messages.js";
+import { upsertClient, setClientStatus, vapi, AREA_TOOL } from "./vapi.js";
+import { checkArea } from "./geo.js";
 import { adminPage, connectionChecks } from "./admin.js";
 
 const DAILY_CRON = "0 13 * * *";
@@ -21,8 +22,9 @@ export default {
   },
 
   async scheduled(event, env) {
-    if (event.cron === DAILY_CRON) await sendDailySummary(env);
-    else await retryFailedAlerts(env);
+    if (event.cron === DAILY_CRON) return sendDailySummary(env);
+    await retryFailedAlerts(env);
+    await watchVapiCalls(env);
   },
 };
 
@@ -36,18 +38,15 @@ async function handleVapi(req, env, ctx) {
 
   const body = await req.json();
   const msg = body.message || body;
+  if (msg.type === "tool-calls") return json(await handleToolCalls(env, msg));
   if (msg.type !== "end-of-call-report") return json({ ok: true, ignored: msg.type });
 
   const call = msg.call || {};
-  const assistantId = call.assistantId || msg.assistant?.id || "";
-  const phoneId = call.phoneNumberId || msg.phoneNumber?.id || "";
-  const client = await env.DB.prepare(
-    "SELECT * FROM clients WHERE (vapi_assistant_id = ? AND ? <> '') OR (vapi_phone_id = ? AND ? <> '') LIMIT 1",
-  ).bind(assistantId, assistantId, phoneId, phoneId).first();
-
+  const client = await findClient(env, msg);
   if (!client) {
-    await logEvent(env, "unknown_client", `Call ${call.id || "?"} from assistant ${assistantId || "?"} / number ${phoneId || "?"} matches no client.`);
-    ctx.waitUntil(alertOperator(env, `⚠️ A call came in that matches no client (assistant ${assistantId || "?"}). Check the admin page.`));
+    const who = `assistant ${call.assistantId || msg.assistant?.id || "?"} / number ${call.phoneNumberId || "?"}`;
+    await logEvent(env, "unknown_client", `Call ${call.id || "?"} from ${who} matches no client.`);
+    ctx.waitUntil(alertOperator(env, `⚠️ A call came in that matches no client (${who}). Check the admin page.`));
     return json({ ok: true, routed: false });
   }
   if (client.status !== "active") {
@@ -61,21 +60,65 @@ async function handleVapi(req, env, ctx) {
   const caller = call.customer?.number || msg.customer?.number || "";
   if (!summary && !transcript && !caller) return json({ ok: true, skipped: "empty call" });
 
+  const callId = call.id || crypto.randomUUID();
+  const area = await env.DB.prepare("SELECT * FROM area_checks WHERE call_id = ? ORDER BY id DESC LIMIT 1").bind(callId).first();
+  const profile = JSON.parse(client.profile || "{}");
+  const skip = area?.status === "outside" && !profile.notifyOutOfArea;
+
   const row = await env.DB.prepare(`
-    INSERT INTO leads (client_id, call_id, caller_number, name, callback, service, address, urgency, best_time,
-      summary, transcript, duration_s, ended_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO leads (client_id, call_id, caller_number, name, callback, service, address, urgency, best_time, details,
+      area_status, area_place, summary, transcript, duration_s, ended_reason, alert_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(call_id) DO NOTHING RETURNING id`,
   ).bind(
-    client.id, call.id || crypto.randomUUID(), caller,
-    str(data.name), hasPhone(data.callback) ? str(data.callback) : caller, str(data.service), str(data.address), str(data.urgency), str(data.best_time),
+    client.id, callId, caller,
+    str(data.name), hasPhone(data.callback) ? str(data.callback) : caller, str(data.service), str(data.address),
+    str(data.urgency), str(data.best_time), str(data.details),
+    area?.status || null, area?.place || null,
     summary || (transcript ? "" : "Caller hung up before giving details. Call them back."),
     transcript.slice(0, 20000), Math.round(Number(msg.durationSeconds) || 0) || null, msg.endedReason || null,
+    skip ? "skipped" : "pending",
   ).first();
 
   if (!row) return json({ ok: true, duplicate: true });
-  ctx.waitUntil(alertOwner(env, row.id));
-  return json({ ok: true, leadId: row.id });
+  if (!skip) ctx.waitUntil(alertOwner(env, row.id));
+  return json({ ok: true, leadId: row.id, skipped: skip ? "out of area" : undefined });
+}
+
+// The agent asks us things mid-call (right now: "is this caller in our area?").
+async function handleToolCalls(env, msg) {
+  const client = await findClient(env, msg);
+  const profile = JSON.parse(client?.profile || "{}");
+  const callId = msg.call?.id || msg.chat?.id || msg.session?.id || "";
+  const list = msg.toolCallList || (msg.toolWithToolCallList || []).map((t) => t.toolCall) || [];
+  const results = [];
+  for (const tc of list) {
+    const name = tc.function?.name || tc.name;
+    let args = tc.function?.arguments ?? tc.arguments ?? tc.parameters ?? {};
+    if (typeof args === "string") args = JSON.parse(args || "{}");
+    if (name !== AREA_TOOL) {
+      results.push({ toolCallId: tc.id, result: "Unknown tool. Continue the call." });
+      continue;
+    }
+    const check = client ? await checkArea(profile, String(args.location || "")) : { status: "unknown", text: "Continue and take their details." };
+    await env.DB.prepare("INSERT INTO area_checks (call_id, client_id, location, status, place, km) VALUES (?, ?, ?, ?, ?, ?)")
+      .bind(callId, client?.id || null, str(args.location), check.status, check.place || null, check.km ?? null).run();
+    results.push({ toolCallId: tc.id, result: check.text });
+  }
+  return { results };
+}
+
+async function findClient(env, msg) {
+  const clientId = msg.assistant?.metadata?.clientId || msg.call?.assistant?.metadata?.clientId || msg.call?.metadata?.clientId;
+  if (clientId) {
+    const c = await env.DB.prepare("SELECT * FROM clients WHERE id = ?").bind(clientId).first();
+    if (c) return c;
+  }
+  const assistantId = msg.call?.assistantId || msg.assistant?.id || msg.chat?.assistantId || "";
+  const phoneId = msg.call?.phoneNumberId || msg.phoneNumber?.id || "";
+  return env.DB.prepare(
+    "SELECT * FROM clients WHERE (vapi_assistant_id = ? AND ? <> '') OR (vapi_phone_id = ? AND ? <> '') LIMIT 1",
+  ).bind(assistantId, assistantId, phoneId, phoneId).first();
 }
 
 // ---------- Admin (your control room) ----------
@@ -113,6 +156,29 @@ async function handleAdmin(req, env, url) {
         });
       }
       return json(out);
+    }
+    if (req.method === "GET" && p === "/admin/vapi-get") {
+      // Read-only look at one Vapi record, for debugging: ?path=/assistant/<id> or /call/<id>
+      const path = url.searchParams.get("path") || "";
+      if (!/^\/(assistant|call|phone-number)(\/[\w-]+)?(\?.*)?$/.test(path)) throw new Error("path must be /assistant, /call or /phone-number");
+      return json(await vapi(env, "GET", path));
+    }
+    if (req.method === "POST" && p === "/admin/test-chat") {
+      // Runs a pretend caller through a client's real agent by text. Body: { client_id, turns: ["hi", ...] }
+      const { client_id, turns = [] } = await req.json();
+      const c = await env.DB.prepare("SELECT vapi_assistant_id FROM clients WHERE id = ?").bind(client_id).first();
+      if (!c?.vapi_assistant_id) throw new Error(`no agent for ${client_id}`);
+      const log = [];
+      let previousChatId;
+      for (const turn of turns) {
+        const r = await vapi(env, "POST", "/chat", { assistantId: c.vapi_assistant_id, input: turn, ...(previousChatId ? { previousChatId } : {}) });
+        previousChatId = r.id;
+        log.push({ caller: turn, agent: (r.output || []).filter((o) => o.role === "assistant" && o.content).map((o) => o.content).join(" ") });
+      }
+      const checks = previousChatId
+        ? (await env.DB.prepare("SELECT location, status, place, km FROM area_checks WHERE call_id = ? ORDER BY id").bind(previousChatId).all()).results
+        : [];
+      return json({ ok: true, chatId: previousChatId, log, area_checks: checks });
     }
     if (req.method === "POST" && p === "/admin/clients") return done(await upsertClient(env, await input(), url.origin));
 

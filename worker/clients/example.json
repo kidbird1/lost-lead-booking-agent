@@ -3,11 +3,16 @@
   "business_name": "Acme Roofing",
   "owner_whatsapp": "+15615551234",
   "owner_sms": "+15615551234",
-  "industry": "roofing",
+  "industry": "roofer",
   "services": "leak repair, storm damage, new roofs, inspections",
   "service_areas": "Boca Raton, Delray Beach, Boynton Beach",
   "hours": "Mon-Sat 8am-6pm",
   "assistant_name": "Riley",
   "area_code": "561",
-  "notes": "Free inspections. Insurance claims welcome."
+  "notes": "Free inspections. Insurance claims welcome.",
+  "home_base": "Boca Raton, FL 33487",
+  "radius": 30,
+  "country": "US",
+  "timezone": "America/New_York",
+  "notify_out_of_area": false
 }

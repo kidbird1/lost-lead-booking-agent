@@ -62,12 +62,28 @@ Run these from the `worker` folder.
 
 To change their agent (new services, new hours), edit the file and run `add` again. It updates the agent and doesn't buy a second number.
 
+## Client file fields
+
+| Field | Example | What it does |
+|---|---|---|
+| `industry` | `plumber` | Picks the trade preset: plumber, hvac, electrician, locksmith, mechanic, solar, roofer, cleaner, pest (anything else = general) |
+| `home_base` | `Boca Raton, FL 33487` | Center of the service area |
+| `radius` | `30` | How far they travel (miles in US/UK, km elsewhere) |
+| `country` | `US`, `NZ`, `AU` | Two-letter country code |
+| `timezone` | `America/New_York` | So the agent knows their local day and time |
+| `notify_out_of_area` | `false` | `true` = still WhatsApp the owner about out-of-area callers |
+
+Out-of-area callers are told politely the team can't help. They show on the admin page as "skipped".
+
 ## Running it day to day
 
 - **Every morning** you get a WhatsApp: calls caught per client, and any failed alerts.
 - **If an owner alert fails 5 times**, you get a WhatsApp with the full lead so you can pass it on yourself.
 - **`node scripts/client.mjs status`** prints everything as data. Claude or Codex can run this and tell you what's wrong.
 - **Failed alerts** retry on their own every 10 minutes.
+- **Watchdog** (every 10 minutes): if a call reaches Vapi but never reaches us, or ends in an error, you get a WhatsApp.
+- **Quiet clients:** the daily report flags any client with no calls in 3 days (their forwarding may be broken).
+- **Turn on auto-reload in Vapi billing** so calls never die from running out of credit.
 
 ## WhatsApp for real clients (do this early, it takes days)
 

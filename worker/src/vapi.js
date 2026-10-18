@@ -1,62 +1,91 @@
 // Everything that talks to Vapi: building the receptionist and setting up clients.
 
+import { tradeFor } from "./trades.js";
+import { geocode } from "./geo.js";
+
 const LEAD_SCHEMA = {
   type: "object",
   properties: {
     name: { type: "string", description: "Caller's name" },
-    callback: { type: "string", description: "Best phone number to call them back" },
+    callback: { type: "string", description: "Best phone number to call them back, as digits. Empty if they said the number they are calling from is fine." },
     service: { type: "string", description: "What they need done, in a few words" },
-    address: { type: "string", description: "Job address or area" },
-    urgency: { type: "string", description: "emergency, this week, or no rush" },
+    address: { type: "string", description: "Job address, or where the caller is right now for mobile jobs" },
+    urgency: { type: "string", description: "emergency, soon, or flexible" },
     best_time: { type: "string", description: "When they want a call back or visit, in their words" },
+    details: { type: "string", description: "Answers to the trade questions (car model, pest type, bill size, etc.) in one short line" },
   },
 };
 
+export const AREA_TOOL = "checkServiceArea";
+
 export function buildPrompt(client, profile) {
   const name = profile.assistantName || "Riley";
+  const trade = tradeFor(profile.industry);
+  const tz = profile.timezone || "America/New_York";
+  const where = trade.mobile
+    ? "Where they are right now: street and town, or the nearest cross streets or landmark plus the town."
+    : "The job address: street and town, or the ZIP or postcode.";
   return [
-    `You are ${name}, the front desk for ${client.business_name}${profile.industry ? `, a ${profile.industry} company` : ""}.`,
-    "The team is busy on a job, so you answer for them. Sound calm, warm and human. Short sentences. One question at a time.",
+    `You are ${name}, the front desk for ${client.business_name}, a ${trade.label} business.`,
+    "The team is busy on a job, so you answer for them. Sound calm, warm and human. Short sentences. One question at a time. Never read out lists.",
+    `Right now it is {{"now" | date: "%A %B %-d, %-I:%M %p", "${tz}"}} where the business is.`,
     profile.services ? `Services: ${profile.services}.` : "",
-    profile.serviceAreas ? `Service area: ${profile.serviceAreas}. If they are outside it, still take their details.` : "",
-    profile.hours ? `Hours: ${profile.hours}.` : "",
+    profile.serviceAreas ? `They serve: ${profile.serviceAreas}.` : "",
+    profile.hours ? `Hours: ${profile.hours}. You answer at any hour; the team follows up.` : "",
     profile.notes ? `Owner notes: ${profile.notes}` : "",
     "",
-    "Get these, in a natural order:",
-    "1. Their name.",
-    "2. The best number to call them back. Ask if the number they are calling from is fine.",
-    "3. What they need done.",
-    "4. The job address or area.",
-    "5. How urgent it is.",
-    "6. The best time for the team to call back or come out.",
+    "Steps:",
+    "1. Ask their name.",
+    `2. Ask: ${where}`,
+    `3. As soon as you have it, say "One moment" and call ${AREA_TOOL} with what they said. Follow what it tells you. If it says OUTSIDE, apologise, say goodbye and end the call.`,
+    "4. Find out what they need. Ask only what applies:",
+    ...trade.ask.map((q) => `   - ${q}`),
+    "5. Ask if the number they are calling from is the best one to reach them. If not, take the better number and repeat it back.",
+    "6. Ask how soon they need help, and the best time for the team to call back or come out.",
+    "7. Read back a one-line summary. Then say: \"Got it. The team will call you back shortly to confirm.\"",
+    `8. Say "Thanks for calling ${client.business_name}. Have a great day." and end the call.`,
     "",
-    "Then read back a one-line summary and say: \"Got it. The team will call you back shortly to confirm.\"",
-    `Then say "Thanks for calling ${client.business_name}. Have a great day." and end the call.`,
+    `EMERGENCY means: ${trade.urgentIf}. In an emergency, keep it fast: name, location, number, what is happening. Tell them the team will call them right back.`,
     "",
     "Rules:",
-    "- Never quote prices. Say the team will go over pricing when they call back.",
-    "- Never promise an exact appointment time. The team confirms.",
-    "- If someone is in danger (gas smell, fire, sparks, flooding near power), tell them to get safe and call 911 first, then take their details and mark it an emergency.",
-    "- If they ask if you are a person, say you are the virtual assistant for the team.",
+    "- If anyone is in danger (gas smell, fire, smoke, sparks, flooding near power, stuck somewhere unsafe), tell them to get safe and call 911 or their local emergency number first.",
+    "- Never quote prices. The team goes over pricing when they call back.",
+    "- Never promise an exact time. The team confirms.",
+    "- If they ask whether you are a person, say you are the virtual assistant for the team.",
     "- If they only want to leave a message, take it with their name and number.",
+    "- Never make up information about the business.",
   ].filter((l) => l !== "").join("\n");
 }
 
 export function buildAssistant(env, client, profile, origin) {
+  const server = { url: `${origin}/vapi`, secret: env.VAPI_SERVER_SECRET };
   const assistant = {
     name: `${client.business_name} desk`.slice(0, 40),
     firstMessage: profile.greeting || `Thanks for calling ${client.business_name}, this is ${profile.assistantName || "Riley"}. How can I help you today?`,
     model: {
       provider: "openai",
       model: env.VAPI_MODEL || "gpt-4o-mini",
-      temperature: 0.4,
+      temperature: 0.3,
       messages: [{ role: "system", content: buildPrompt(client, profile) }],
+      tools: [{
+        type: "function",
+        function: {
+          name: AREA_TOOL,
+          description: "Checks if the caller's location is inside the area this business serves. Call it once you know where the job is.",
+          parameters: {
+            type: "object",
+            properties: { location: { type: "string", description: "What the caller said: street and town, town and state, or ZIP/postcode. Include the town whenever you have it." } },
+            required: ["location"],
+          },
+        },
+        server,
+      }],
     },
     endCallFunctionEnabled: true,
     maxDurationSeconds: 600,
     silenceTimeoutSeconds: 30,
-    serverMessages: ["end-of-call-report"],
-    server: { url: `${origin}/vapi`, secret: env.VAPI_SERVER_SECRET },
+    serverMessages: ["end-of-call-report", "tool-calls"],
+    server,
     analysisPlan: {
       summaryPlan: { enabled: true },
       structuredDataPlan: { enabled: true, schema: LEAD_SCHEMA },
@@ -96,7 +125,19 @@ export async function upsertClient(env, input, origin) {
     assistantName: pick("assistant_name", "assistantName"), greeting: pick("greeting", "greeting"),
     industry: pick("industry", "industry"), services: pick("services", "services"),
     serviceAreas: pick("service_areas", "serviceAreas"), hours: pick("hours", "hours"), notes: pick("notes", "notes"),
+    country: (pick("country", "country") || "US").toUpperCase(),
+    timezone: pick("timezone", "timezone") || "America/New_York",
+    homeBase: pick("home_base", "homeBase"),
+    radius: Number(input.radius || old.radius || 30),
+    notifyOutOfArea: input.notify_out_of_area != null ? Boolean(input.notify_out_of_area) : Boolean(old.notifyOutOfArea),
+    base: old.base || null,
   };
+  profile.units = String(input.units || old.units || (["US", "GB", "LR", "MM"].includes(profile.country) ? "mi" : "km"));
+  if (profile.homeBase && (!profile.base || profile.homeBase !== old.homeBase)) {
+    const hit = await geocode(profile.homeBase, profile.country);
+    if (!hit) throw new Error(`Could not find home_base "${profile.homeBase}" on the map. Try "town, state ZIP".`);
+    profile.base = { lat: hit.lat, lng: hit.lng, place: hit.place };
+  }
   const client = {
     id, business_name: input.business_name,
     owner_whatsapp: input.owner_whatsapp || existing?.owner_whatsapp || null,
@@ -137,7 +178,7 @@ export async function upsertClient(env, input, origin) {
       const phone = await vapi(env, "PATCH", `/phone-number/${client.vapi_phone_id}`, { assistantId: client.vapi_assistant_id, server: null });
       client.phone_number = phone.number || client.phone_number;
       notes.push(`Pointed your existing number ${client.phone_number || ""} at this agent.`);
-    } else if (!client.vapi_phone_id) {
+    } else if (!client.vapi_phone_id && !input.no_phone) {
       const phoneReq = input.twilio_number
         ? { provider: "twilio", number: input.twilio_number, twilioAccountSid: env.TWILIO_ACCOUNT_SID, twilioAuthToken: env.TWILIO_AUTH_TOKEN }
         : { provider: "vapi", numberDesiredAreaCode: String(input.area_code || "") || undefined };

@@ -24,11 +24,14 @@ CREATE TABLE IF NOT EXISTS leads (
   address TEXT,
   urgency TEXT,
   best_time TEXT,
+  details TEXT,
+  area_status TEXT,                    -- inside | outside | unknown | NULL
+  area_place TEXT,
   summary TEXT,
   transcript TEXT,
   duration_s INTEGER,
   ended_reason TEXT,
-  alert_status TEXT NOT NULL DEFAULT 'pending', -- pending | sent | test | failed | gave_up
+  alert_status TEXT NOT NULL DEFAULT 'pending', -- pending | sent | test | failed | gave_up | skipped
   alert_channel TEXT,
   alert_error TEXT,
   alert_attempts INTEGER NOT NULL DEFAULT 0,
@@ -45,3 +48,16 @@ CREATE TABLE IF NOT EXISTS events (
 
 CREATE INDEX IF NOT EXISTS leads_client_time ON leads (client_id, created_at);
 CREATE INDEX IF NOT EXISTS leads_alert ON leads (alert_status);
+
+-- Each time the agent checks a caller's location during a call.
+CREATE TABLE IF NOT EXISTS area_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  call_id TEXT,
+  client_id TEXT,
+  location TEXT,
+  status TEXT,
+  place TEXT,
+  km REAL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS area_checks_call ON area_checks (call_id);

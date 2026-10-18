@@ -1,3 +1,4 @@
+import { vapi } from "./vapi.js";
 // Sending WhatsApp (and SMS backup) through Twilio.
 
 const MAX_ATTEMPTS = 5;
@@ -35,13 +36,19 @@ export async function twilioSend(env, { to, body, channel, template }) {
   return { ok: true, mode: "live", sid: data.sid };
 }
 
+function isUrgent(lead) {
+  return /emergenc|urgent|asap|right now|immediate/i.test(lead.urgency || "");
+}
+
 function leadText(lead, client) {
   return [
-    `📞 Missed call caught for ${client.business_name}`,
+    isUrgent(lead) ? `🚨 URGENT: call back now. Missed call for ${client.business_name}` : `📞 Missed call caught for ${client.business_name}`,
     `Name: ${lead.name || "not given"}`,
     `Call back: ${lead.callback || lead.caller_number || "not given"}`,
     `Job: ${lead.service || "not given"}`,
-    `Address: ${lead.address || "not given"}`,
+    lead.details ? `Details: ${lead.details}` : "",
+    `Address: ${lead.address || "not given"}${lead.area_place ? ` (${lead.area_place})` : ""}`,
+    lead.area_status === "outside" ? "⚠️ Outside your service area" : "",
     `Urgency: ${lead.urgency || "not given"}`,
     `Best time: ${lead.best_time || "not given"}`,
     lead.summary ? `\n${lead.summary}` : "",
@@ -123,5 +130,45 @@ export async function sendDailySummary(env) {
   if (!results.length) return;
   const lines = results.map((r) => `• ${r.business_name}${r.status !== "active" ? ` (${r.status})` : ""}: ${r.calls} calls${r.failed ? `, ${r.failed} alerts FAILED` : ""}`);
   const total = results.reduce((n, r) => n + r.calls, 0);
-  await alertOperator(env, `Daily report: ${total} missed calls caught in the last 24 h.\n\n${lines.join("\n")}`);
+  const quiet = await quietClients(env);
+  const quietText = quiet.length ? `\n\n🔕 No calls in 3 days (check their call forwarding): ${quiet.join(", ")}` : "";
+  await alertOperator(env, `Daily report: ${total} missed calls caught in the last 24 h.\n\n${lines.join("\n")}${quietText}`);
+}
+
+// Watchdog: calls that reached Vapi but never made it to us, or ended in an error.
+// Runs every 10 minutes. Each problem call is reported to you once.
+export async function watchVapiCalls(env) {
+  if (!env.VAPI_API_KEY) return;
+  const since = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const calls = await vapi(env, "GET", `/call?limit=100&createdAtGt=${encodeURIComponent(since)}`).catch((e) => {
+    console.error("watchdog:", e.message);
+    return [];
+  });
+  const { results: clients } = await env.DB.prepare("SELECT id, business_name, vapi_assistant_id FROM clients").all();
+  const byAssistant = Object.fromEntries(clients.map((c) => [c.vapi_assistant_id, c]));
+  const problems = [];
+  for (const c of calls) {
+    if (!c.endedAt || Date.now() - Date.parse(c.endedAt) < 3 * 60 * 1000) continue; // give the report time to arrive
+    const client = byAssistant[c.assistantId];
+    if (!client) continue;
+    const seen = await env.DB.prepare("SELECT 1 FROM events WHERE kind = 'watchdog' AND detail LIKE ?").bind(`%${c.id}%`).first();
+    if (seen) continue;
+    const lead = await env.DB.prepare("SELECT 1 FROM leads WHERE call_id = ?").bind(c.id).first();
+    const errored = /error|fail|unavailable|insufficient|invalid/i.test(c.endedReason || "");
+    if (!lead || errored) {
+      const why = errored ? `ended with "${c.endedReason}"` : "never reached our server";
+      problems.push(`• ${client.business_name}: call ${why}`);
+      await env.DB.prepare("INSERT INTO events (kind, detail) VALUES ('watchdog', ?)").bind(`${client.id}: call ${c.id} ${why}`).run();
+    }
+  }
+  if (problems.length) await alertOperator(env, `⚠️ Call problems found:\n${problems.join("\n")}\n\nOpen the admin page or Vapi logs.`);
+}
+
+// Clients whose phones went quiet: forwarding may be broken.
+async function quietClients(env) {
+  const { results } = await env.DB.prepare(`
+    SELECT c.business_name FROM clients c
+    WHERE c.status = 'active' AND c.created_at < datetime('now', '-3 day')
+      AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.client_id = c.id AND l.created_at > datetime('now', '-3 day'))`).all();
+  return results.map((r) => r.business_name);
 }

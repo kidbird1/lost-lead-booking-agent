@@ -42,7 +42,7 @@ export async function connectionChecks(env) {
 }
 
 const badge = (status) => {
-  const tone = { sent: "ok", active: "ok", test: "info", pending: "info", setup: "info", failed: "bad", gave_up: "bad", paused: "warn" }[status] || "info";
+  const tone = { sent: "ok", active: "ok", inside: "ok", test: "info", pending: "info", setup: "info", unknown: "info", skipped: "warn", outside: "warn", failed: "bad", gave_up: "bad", paused: "warn" }[status] || "info";
   return `<span class="badge ${tone}">${esc(status)}</span>`;
 };
 
@@ -73,7 +73,7 @@ export async function adminPage(env, url) {
     <td><small>${esc(l.created_at)}</small></td>
     <td>${esc(names[l.client_id] || l.client_id)}</td>
     <td><b>${esc(l.name || "—")}</b><br><a href="tel:${esc(l.callback || l.caller_number)}">${esc(l.callback || l.caller_number || "")}</a></td>
-    <td>${esc(l.service || "")}<br><small>${esc(l.urgency || "")} ${l.best_time ? "· " + esc(l.best_time) : ""}</small></td>
+    <td>${esc(l.service || "")}<br><small>${esc(l.urgency || "")} ${l.best_time ? "· " + esc(l.best_time) : ""}</small>${l.area_status ? `<br>${badge(l.area_status)} <small>${esc(l.area_place || "")}</small>` : ""}</td>
     <td>${badge(l.alert_status)} <small>${esc(l.alert_channel || "")}</small>${l.alert_error ? `<br><small class="err">${esc(l.alert_error)}</small>` : ""}</td>
     <td><details><summary>View</summary><p>${esc(l.summary)}</p><pre>${esc(l.transcript)}</pre></details>
       <form method="post" action="/admin/leads/${l.id}/resend"><button>Resend</button></form></td>
@@ -113,8 +113,10 @@ ${msg ? `<div class="banner good">${esc(msg)}</div>` : ""}${err ? `<div class="b
 <form class="grid" method="post" action="/admin/clients">
 ${field("id", "Short id", "acme-roofing", true)}${field("business_name", "Business name", "Acme Roofing", true)}
 ${field("owner_whatsapp", "Owner WhatsApp", "+15615551234")}${field("owner_sms", "Owner SMS backup", "+15615551234")}
-${field("industry", "Industry", "roofing")}${field("services", "Services", "leaks, repairs, new roofs")}
+${field("industry", "Trade", "plumber, hvac, electrician, locksmith, mechanic, solar, roofer, cleaner, pest")}${field("services", "Services", "leaks, repairs, new roofs")}
 ${field("service_areas", "Service area", "Boca Raton, Delray Beach")}${field("hours", "Hours", "Mon-Sat 8am-6pm")}
+${field("home_base", "Home base (center of service area)", "Boca Raton, FL 33487")}${field("radius", "Radius", "30")}
+${field("country", "Country code", "US")}${field("timezone", "Time zone", "America/New_York")}
 ${field("assistant_name", "Agent name", "Riley")}${field("area_code", "Phone area code", "561")}
 ${field("notes", "Notes for the agent", "We do free inspections")}${field("vapi_assistant_id", "Existing Vapi assistant id (optional)", "")}
 <label>&nbsp;<button>Save client</button></label></form>
