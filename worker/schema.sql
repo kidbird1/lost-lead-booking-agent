@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS leads (
   company TEXT,
   area_status TEXT,                    -- inside | outside | unknown | NULL
   area_place TEXT,
+  address_verified TEXT,               -- verified | not_found | street_only | no_number
+  address_matched TEXT,                -- address as the map knows it
   summary TEXT,
   transcript TEXT,
   duration_s INTEGER,
@@ -60,6 +62,8 @@ CREATE TABLE IF NOT EXISTS area_checks (
   status TEXT,
   place TEXT,
   km REAL,
+  verified TEXT,
+  matched TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS area_checks_call ON area_checks (call_id);

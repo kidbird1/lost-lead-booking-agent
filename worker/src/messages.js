@@ -40,6 +40,13 @@ function isUrgent(lead) {
   return /emergenc|urgent|asap|right now|immediate/i.test(lead.urgency || "");
 }
 
+function addressBadge(lead) {
+  if (lead.address_verified === "verified") return " ✅ verified";
+  if (lead.address_verified === "not_found") return " ⚠️ not found on map: confirm with the caller";
+  if (lead.address_verified === "street_only") return " (street found, house number not checked)";
+  return lead.area_place ? ` (${lead.area_place})` : "";
+}
+
 function leadText(lead, client) {
   return [
     isUrgent(lead) ? `🚨 URGENT: call back now. Missed call for ${client.business_name}` : `📞 Missed call caught for ${client.business_name}`,
@@ -48,7 +55,8 @@ function leadText(lead, client) {
     /business|commercial|industrial/i.test(lead.property_type || "") ? `🏢 Commercial: ${lead.company || lead.property_type}` : "",
     `Job: ${lead.service || "not given"}`,
     lead.details ? `Details: ${lead.details}` : "",
-    `Address: ${lead.address || "not given"}${lead.area_place ? ` (${lead.area_place})` : ""}`,
+    `Address: ${lead.address_matched || lead.address || "not given"}${addressBadge(lead)}`,
+    lead.address_matched || lead.address ? `Map: https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lead.address_matched || lead.address)}` : "",
     lead.area_status === "outside" ? "⚠️ Outside your usual area. Your call whether to take it." : "",
     `Urgency: ${lead.urgency || "not given"}`,
     `Best time: ${lead.best_time || "not given"}`,

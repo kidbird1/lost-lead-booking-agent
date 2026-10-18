@@ -23,7 +23,7 @@ export async function geocode(query, country = "", near = null, boxDeg = 1) {
   const town = a.city || a.town || a.village || a.hamlet || a.suburb || a.county || "";
   const place = [town, a.state || a.region, a.country_code?.toUpperCase()].filter(Boolean).join(", ") || hit.display_name;
   const kind = hit.addresstype || hit.type || "";
-  return { lat: Number(hit.lat), lng: Number(hit.lon), place, kind, country: a.country_code?.toUpperCase() || "" };
+  return { lat: Number(hit.lat), lng: Number(hit.lon), place, kind, display: hit.display_name, country: a.country_code?.toUpperCase() || "" };
 }
 
 const TOWN_KINDS = new Set(["city", "town", "village", "hamlet", "suburb", "municipality", "county", "state", "region",
@@ -57,8 +57,47 @@ export function distanceKm(a, b) {
   return 6371 * 2 * Math.asin(Math.sqrt(h));
 }
 
-// Returns { status: inside | outside | unknown, text } where text is what the agent is told.
-export async function checkArea(profile, location) {
+// The agent's mid-call check: is the place in the area, and does the exact address exist?
+// Returns { status, place, km, verified, matched, lat, lng, text } where text is what the agent is told.
+export async function checkArea(profile, location, mobile = false) {
+  const text = spokenToDigits(location);
+  const country = profile.country || "US";
+  const hasStreet = /\b\d{1,6}[a-z]?\s+[a-z]{2,}/i.test(text); // a house number followed by a street name
+
+  const addr = hasStreet ? await verifyAddress(text, country).catch(() => ({ level: "error" })) : { level: "no_number" };
+  // A verified address is the most precise point, so use it for the distance too.
+  const area = await areaOnly(profile, addr.level === "verified" ? addr.matched : location);
+
+  let note = "";
+  if (addr.level === "verified") note = ` Address confirmed on the map as: ${addr.matched}. Use that spelling.`;
+  else if (addr.level === "not_found") note = " That exact address was NOT found on the map. Read the house number and street back once and ask them to confirm or spell the street. If they correct it, call the check again with the corrected address. If they confirm it, continue.";
+  else if (addr.level === "no_number" && !mobile) note = " If you do not have it yet, ask for the house number and street.";
+
+  return { ...area, verified: addr.level, matched: addr.matched || null, lat: addr.lat, lng: addr.lng, text: area.text + note };
+}
+
+// Exact address check. US: Census Bureau address database (free, every street, fixes misheard names).
+// Elsewhere: OpenStreetMap, which only knows house numbers in some areas.
+export async function verifyAddress(text, country) {
+  if (country === "US") {
+    const url = new URL("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress");
+    url.searchParams.set("address", text);
+    url.searchParams.set("benchmark", "Public_AR_Current");
+    url.searchParams.set("format", "json");
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return { level: "error" };
+    const m = (await res.json()).result?.addressMatches?.[0];
+    if (!m) return { level: "not_found" };
+    return { level: "verified", matched: m.matchedAddress, lat: m.coordinates.y, lng: m.coordinates.x };
+  }
+  const hit = await geocode(text, country);
+  if (hit && ["house", "building", "residential", "commercial", "industrial", "retail", "office"].includes(hit.kind)) {
+    return { level: "verified", matched: hit.display, lat: hit.lat, lng: hit.lng };
+  }
+  return { level: hit ? "street_only" : "not_found" };
+}
+
+async function areaOnly(profile, location) {
   if (!profile.base?.lat) return { status: "unknown", text: "No service area is set for this business. Continue and take their details." };
   let hit = null;
   // Search near the business first (so "123 Main Street" means THEIR Main Street),

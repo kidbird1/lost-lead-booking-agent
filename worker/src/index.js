@@ -3,6 +3,7 @@
 import { alertOwner, alertOperator, retryFailedAlerts, sendDailySummary, watchVapiCalls } from "./messages.js";
 import { upsertClient, setClientStatus, vapi, AREA_TOOL } from "./vapi.js";
 import { checkArea } from "./geo.js";
+import { tradeFor } from "./trades.js";
 import { joinPage, thanksPage, saveSignup } from "./join.js";
 import { adminPage, connectionChecks } from "./admin.js";
 
@@ -67,14 +68,14 @@ async function handleVapi(req, env, ctx) {
 
   const row = await env.DB.prepare(`
     INSERT INTO leads (client_id, call_id, caller_number, name, callback, service, address, urgency, best_time, details, property_type, company,
-      area_status, area_place, summary, transcript, duration_s, ended_reason, alert_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      area_status, area_place, address_verified, address_matched, summary, transcript, duration_s, ended_reason, alert_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(call_id) DO NOTHING RETURNING id`,
   ).bind(
     client.id, callId, caller,
     str(data.name), hasPhone(data.callback) ? str(data.callback) : caller, str(data.service), str(data.address),
     str(data.urgency), str(data.best_time), str(data.details), str(data.property_type), str(data.company),
-    area?.status || null, area?.place || null,
+    area?.status || null, area?.place || null, area?.verified || null, area?.matched || null,
     summary || (transcript ? "" : "Caller hung up before giving details. Call them back."),
     transcript.slice(0, 20000), Math.round(Number(msg.durationSeconds) || 0) || null, msg.endedReason || null,
     "pending",
@@ -100,9 +101,9 @@ async function handleToolCalls(env, msg) {
       results.push({ toolCallId: tc.id, result: "Unknown tool. Continue the call." });
       continue;
     }
-    const check = client ? await checkArea(profile, String(args.location || "")) : { status: "unknown", text: "Continue and take their details." };
-    await env.DB.prepare("INSERT INTO area_checks (call_id, client_id, location, status, place, km) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(callId, client?.id || null, str(args.location), check.status, check.place || null, check.km ?? null).run();
+    const check = client ? await checkArea(profile, String(args.location || ""), Boolean(tradeFor(profile.industry).mobile)) : { status: "unknown", text: "Continue and take their details." };
+    await env.DB.prepare("INSERT INTO area_checks (call_id, client_id, location, status, place, km, verified, matched) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(callId, client?.id || null, str(args.location), check.status, check.place || null, check.km ?? null, check.verified || null, check.matched || null).run();
     results.push({ toolCallId: tc.id, result: check.text });
   }
   return { results };
