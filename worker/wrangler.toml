@@ -10,7 +10,7 @@ crons = ["*/10 * * * *", "0 13 * * *"]
 [[d1_databases]]
 binding = "DB"
 database_name = "missed-call-agent"
-database_id = "REPLACE_AFTER_wrangler_d1_create"
+database_id = "2a541dc4-198b-4f53-a00f-a4142ee3bede"
 
 # Non-secret settings. Secrets go in with `npx wrangler secret put NAME` (see RUN-GUIDE.md).
 [vars]
