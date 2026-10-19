@@ -64,7 +64,7 @@ export async function checkArea(profile, location, mobile = false) {
   const country = profile.country || "US";
   const hasStreet = /\b\d{1,6}[a-z]?\s+[a-z]{2,}/i.test(text); // a house number followed by a street name
 
-  const addr = hasStreet ? await verifyAddress(text, country).catch(() => ({ level: "error" })) : { level: "no_number" };
+  const addr = hasStreet ? await verifyAddress(text, country, profile.base).catch(() => ({ level: "error" })) : { level: "no_number" };
   // A verified address is the most precise point, so use it for the distance too.
   const area = await areaOnly(profile, addr.level === "verified" ? addr.matched : location);
 
@@ -78,23 +78,33 @@ export async function checkArea(profile, location, mobile = false) {
 
 // Exact address check. US: Census Bureau address database (free, every street, fixes misheard names).
 // Elsewhere: OpenStreetMap, which only knows house numbers in some areas.
-export async function verifyAddress(text, country) {
+export async function verifyAddress(text, country, base = null) {
   if (country === "US") {
-    const url = new URL("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress");
-    url.searchParams.set("address", text);
-    url.searchParams.set("benchmark", "Public_AR_Current");
-    url.searchParams.set("format", "json");
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) return { level: "error" };
-    const m = (await res.json()).result?.addressMatches?.[0];
-    if (!m) return { level: "not_found" };
-    return { level: "verified", matched: m.matchedAddress, lat: m.coordinates.y, lng: m.coordinates.x };
+    // Caller gave only a street ("672 NW 53rd Ave")? Add the business's state; Census then lists
+    // every match in the state and we take the one closest to the business.
+    let matches = await censusMatches(text);
+    const state = base?.place?.split(",")[1]?.trim();
+    if (!matches.length && state && !/\b\d{5}\b/.test(text)) matches = await censusMatches(`${text}, ${state}`);
+    if (!matches.length) return { level: "not_found" };
+    const pts = matches.map((m) => ({ matched: m.matchedAddress, lat: m.coordinates.y, lng: m.coordinates.x }));
+    if (base?.lat) pts.sort((a, b) => distanceKm(base, a) - distanceKm(base, b));
+    return { level: "verified", ...pts[0] };
   }
   const hit = await geocode(text, country);
   if (hit && ["house", "building", "residential", "commercial", "industrial", "retail", "office"].includes(hit.kind)) {
     return { level: "verified", matched: hit.display, lat: hit.lat, lng: hit.lng };
   }
   return { level: hit ? "street_only" : "not_found" };
+}
+
+async function censusMatches(address) {
+  const url = new URL("https://geocoding.geo.census.gov/geocoder/locations/onelineaddress");
+  url.searchParams.set("address", address);
+  url.searchParams.set("benchmark", "Public_AR_Current");
+  url.searchParams.set("format", "json");
+  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`census ${res.status}`);
+  return (await res.json()).result?.addressMatches || [];
 }
 
 async function areaOnly(profile, location) {

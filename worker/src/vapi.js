@@ -25,8 +25,8 @@ export function buildPrompt(client, profile) {
   const trade = tradeFor(profile.industry);
   const tz = profile.timezone || "America/New_York";
   const where = trade.mobile
-    ? "Where they are right now: street and town, or the nearest cross streets or landmark plus the town."
-    : "The job address: street and town, or the ZIP or postcode.";
+    ? "Where they are right now (an address, cross streets or a landmark)."
+    : "The job address.";
   return [
     `You are ${name}, the front desk for ${client.business_name}, a ${trade.label} business.`,
     "The team is busy on a job, so you answer for them. Sound calm, warm and human. Short sentences. One question at a time. Never read out lists.",
@@ -39,7 +39,7 @@ export function buildPrompt(client, profile) {
     "Steps:",
     "1. Ask their name.",
     `2. Ask: ${where}`,
-    `3. As soon as you have it, say "One moment" and call ${AREA_TOOL} with what they said. Never turn anyone away; the team decides.`,
+    `3. As soon as they say any part of a location (street, town or ZIP), say "One moment" and call ${AREA_TOOL} with exactly what they said. Do NOT ask for the town, ZIP, county or state first; the check works those out. Only ask a follow-up if the check tells you to. Never turn anyone away; the team decides.`,
     "4. Ask if it is a home or a business. If it is a business or industrial site (hotel, restaurant, office, store, warehouse, factory, rental property), get the business name and their role (owner, manager, maintenance), and if someone will be on site to let the team in.",
     "5. Find out what they need. Ask only what applies:",
     ...trade.ask.map((q) => `   - ${q}`),
@@ -57,6 +57,7 @@ export function buildPrompt(client, profile) {
     "- If they ask whether you are a person, say you are the virtual assistant for the team.",
     "- If they only want to leave a message, take it with their name and number.",
     "- Never make up information about the business.",
+    "- Never ask for something the caller already told you. If they give several details at once, take them all and skip those questions.",
   ].filter((l) => l !== "").join("\n");
 }
 
@@ -77,7 +78,7 @@ export function buildAssistant(env, client, profile, origin) {
           description: "Checks if the caller's location is inside the area this business serves. Call it once you know where the job is.",
           parameters: {
             type: "object",
-            properties: { location: { type: "string", description: "What the caller said: street and town, town and state, or ZIP/postcode. Include the town whenever you have it." } },
+            properties: { location: { type: "string", description: "Exactly what the caller said about the location: a street address, a town, or a ZIP/postcode. Any of these alone is fine. Write numbers as digits." } },
             required: ["location"],
           },
         },
