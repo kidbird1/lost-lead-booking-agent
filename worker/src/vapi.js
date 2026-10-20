@@ -65,7 +65,8 @@ export function buildAssistant(env, client, profile, origin) {
   const server = { url: `${origin}/vapi`, secret: env.VAPI_SERVER_SECRET };
   const assistant = {
     name: `${client.business_name} desk`.slice(0, 40),
-    firstMessage: profile.greeting || `Thanks for calling ${client.business_name}, this is ${profile.assistantName || "Riley"}. How can I help you today?`,
+    // The recording notice is always said: Florida and other all-party-consent states require it.
+    firstMessage: `${profile.greeting || `Thanks for calling ${client.business_name}, this is ${profile.assistantName || "Riley"}.`} This call may be recorded. How can I help you today?`,
     model: {
       provider: "openai",
       model: env.VAPI_MODEL || "gpt-4o-mini",
